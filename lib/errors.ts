@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/logger";
+import OpenAI from "openai";
 
 export class AppError extends Error {
   readonly status: number;
@@ -14,6 +15,10 @@ export class AppError extends Error {
 export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof AppError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
+  }
+
+  if (error instanceof OpenAI.APIError) {
+    return NextResponse.json({ error: error.message }, { status: error.status || 500 });
   }
 
   logger.error("Unhandled API error", {

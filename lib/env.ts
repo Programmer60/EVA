@@ -1,7 +1,9 @@
 type AppEnv = {
   nodeEnv: string;
-  openAiApiKey: string | null;
-  openAiModel: string;
+  geminiApiKey: string | null;
+  geminiModel: string;
+  openRouterApiKey: string | null;
+  openRouterModel: string;
   elevenLabsApiKey: string | null;
   databaseUrl: string | null;
   mongodbUri: string | null;
@@ -19,8 +21,11 @@ function clean(value: string | undefined): string | null {
 
 export const env: AppEnv = {
   nodeEnv: process.env.NODE_ENV ?? "development",
-  openAiApiKey: clean(process.env.OPENAI_API_KEY),
-  openAiModel: clean(process.env.OPENAI_MODEL) ?? "gpt-4.1-mini",
+  geminiApiKey: clean(process.env.GEMINI_API_KEY),
+  geminiModel: clean(process.env.GEMINI_MODEL) ?? "gemini-2.0-flash",
+  openRouterApiKey: clean(process.env.OPENROUTER_API_KEY),
+  openRouterModel:
+    clean(process.env.OPENROUTER_MODEL) ?? "mistralai/mistral-7b-instruct",
   elevenLabsApiKey: clean(process.env.ELEVENLABS_API_KEY),
   databaseUrl: clean(process.env.DATABASE_URL),
   mongodbUri: clean(process.env.MONGODB_URI),

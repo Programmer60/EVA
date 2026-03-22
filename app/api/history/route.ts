@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/lib/models/Message";
-import { AppError, toErrorResponse } from "@/lib/errors";
+import { toErrorResponse } from "@/lib/errors";
 
 export async function GET(request: NextRequest) {
   try {
