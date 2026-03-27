@@ -1,12 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  detectBestTtsMode,
+  isBrowserTtsAvailable,
+  speakWithFallback,
+  stopAll as ttsStopAll,
+  type TtsFallbackStatus,
+  type TtsMode,
+} from "@/lib/audio/ttsManager";
 
 type SpeechRecognitionLike = {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult: ((event: {
+    resultIndex: number;
+    results: ArrayLike<
+      {
+        isFinal: boolean;
+      } & ArrayLike<{ transcript: string }>
+    >;
+  }) => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
@@ -14,8 +29,6 @@ type SpeechRecognitionLike = {
 };
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-type TtsMode = "browser" | "server";
 
 function noopSubscribe(): () => void {
   return () => undefined;
@@ -51,11 +64,14 @@ export function VoicePanel() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [ttsMode, setTtsMode] = useState<TtsMode>("browser");
+  const [ttsFallbackStatus, setTtsFallbackStatus] = useState<TtsFallbackStatus>("idle");
+  const [ttsFallbackDetail, setTtsFallbackDetail] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string>("");
   const [lastReply, setLastReply] = useState<string>("");
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [isRetryingNetwork, setIsRetryingNetwork] = useState(false);
   const [micPermission, setMicPermission] = useState<"unknown" | "granted" | "denied">("unknown");
+  const [autoDetectedMode, setAutoDetectedMode] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const transcriptBufferRef = useRef("");
@@ -65,9 +81,6 @@ export function VoicePanel() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
-  const ttsRequestIdRef = useRef(0);
 
   const speechRecognitionSupported = useSyncExternalStore(
     noopSubscribe,
@@ -76,10 +89,7 @@ export function VoicePanel() {
   );
   const speechSynthesisSupported = useSyncExternalStore(
     noopSubscribe,
-    () =>
-      typeof window !== "undefined" &&
-      typeof window.speechSynthesis !== "undefined" &&
-      typeof window.SpeechSynthesisUtterance !== "undefined",
+    () => isBrowserTtsAvailable(),
     () => false,
   );
   const mediaRecorderSupported = useSyncExternalStore(
@@ -88,133 +98,58 @@ export function VoicePanel() {
     () => false,
   );
 
+  // Auto-detect best TTS mode on mount
+  useEffect(() => {
+    const best = detectBestTtsMode(serverTtsEnabled);
+    if (best === "server" && !speechSynthesisSupported) {
+      setTtsMode("server");
+      setAutoDetectedMode(true);
+    }
+  }, [serverTtsEnabled, speechSynthesisSupported]);
+
   const canPlayReply =
     Boolean(lastReply) && (ttsMode === "browser" ? speechSynthesisSupported : serverTtsEnabled);
 
+  const ttsCallbacks = useCallback(() => ({
+    onStatusChange: (status: TtsFallbackStatus, detail?: string) => {
+      setTtsFallbackStatus(status);
+      setTtsFallbackDetail(detail ?? null);
+
+      if (status === "speaking-browser" || status === "speaking-server") {
+        setIsSpeaking(true);
+      } else if (status === "idle" || status === "error") {
+        setIsSpeaking(false);
+      } else if (status === "fallback-activated") {
+        setIsSpeaking(true);
+      }
+    },
+  }), []);
+
   const stopSpeaking = useCallback((): void => {
-    ttsRequestIdRef.current += 1;
-
-    if (audioElementRef.current) {
-      audioElementRef.current.pause();
-      audioElementRef.current.src = "";
-      audioElementRef.current = null;
-    }
-
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
-
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-
+    ttsStopAll();
     setIsSpeaking(false);
+    setTtsFallbackStatus("idle");
+    setTtsFallbackDetail(null);
   }, []);
-
-  const speakTextWithBrowser = useCallback((text: string): void => {
-    if (typeof window === "undefined" || !window.speechSynthesis || !text.trim()) {
-      return;
-    }
-
-    stopSpeaking();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-      setVoiceError("Could not play voice reply.");
-    };
-
-    window.speechSynthesis.speak(utterance);
-  }, [stopSpeaking]);
-
-  const speakTextWithServer = useCallback(async (text: string): Promise<void> => {
-    const clean = text.trim();
-    if (!clean) {
-      return;
-    }
-
-    if (!serverTtsEnabled) {
-      setVoiceError("Server TTS fallback is disabled. Use Browser TTS mode.");
-      return;
-    }
-
-    stopSpeaking();
-    const requestId = ttsRequestIdRef.current + 1;
-    ttsRequestIdRef.current = requestId;
-    setVoiceError(null);
-    setIsSpeaking(true);
-
-    try {
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: clean, voiceId: "alloy" }),
-      });
-
-      if (!response.ok) {
-        const data = (await response.json().catch(() => ({ error: "Server TTS failed." }))) as { error?: string };
-        throw new Error(data.error || "Server TTS failed.");
-      }
-
-      const audioBlob = await response.blob();
-      if (requestId !== ttsRequestIdRef.current) {
-        return;
-      }
-
-      const objectUrl = URL.createObjectURL(audioBlob);
-      audioUrlRef.current = objectUrl;
-
-      const audio = new Audio(objectUrl);
-      audioElementRef.current = audio;
-
-      audio.onended = () => {
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
-        }
-        if (audioElementRef.current === audio) {
-          audioElementRef.current = null;
-        }
-        setIsSpeaking(false);
-      };
-
-      audio.onerror = () => {
-        if (audioUrlRef.current) {
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = null;
-        }
-        if (audioElementRef.current === audio) {
-          audioElementRef.current = null;
-        }
-        setVoiceError("Could not play server voice reply.");
-        setIsSpeaking(false);
-      };
-
-      await audio.play();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Server TTS failed.";
-      setVoiceError(message);
-      setIsSpeaking(false);
-    }
-  }, [serverTtsEnabled, stopSpeaking]);
 
   const speakText = useCallback((text: string): void => {
     if (!text.trim()) {
       return;
     }
 
-    if (ttsMode === "server") {
-      void speakTextWithServer(text);
-      return;
-    }
+    setVoiceError(null);
+    setTtsFallbackDetail(null);
 
-    speakTextWithBrowser(text);
-  }, [speakTextWithBrowser, speakTextWithServer, ttsMode]);
+    speakWithFallback(text, {
+      preferredMode: ttsMode,
+      serverTtsEnabled,
+      callbacks: ttsCallbacks(),
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : "TTS playback failed.";
+      setVoiceError(message);
+      setIsSpeaking(false);
+    });
+  }, [ttsMode, serverTtsEnabled, ttsCallbacks]);
 
   function sendTranscriptDraftToChat(message: string): void {
     if (typeof window === "undefined" || !message.trim()) {
@@ -564,7 +499,7 @@ export function VoicePanel() {
             name="eva-tts-mode"
             value="browser"
             checked={ttsMode === "browser"}
-            onChange={() => setTtsMode("browser")}
+            onChange={() => { setTtsMode("browser"); setAutoDetectedMode(false); }}
           />
           Browser TTS
         </label>
@@ -574,7 +509,7 @@ export function VoicePanel() {
             name="eva-tts-mode"
             value="server"
             checked={ttsMode === "server"}
-            onChange={() => setTtsMode("server")}
+            onChange={() => { setTtsMode("server"); setAutoDetectedMode(false); }}
             disabled={!serverTtsEnabled}
           />
           Server TTS Fallback
@@ -661,6 +596,14 @@ export function VoicePanel() {
       {isListening && <p className="eva-note">Listening... speak naturally, then click Stop Mic to fill editable chat text.</p>}
       {isServerRecording && <p className="eva-note">Recording audio... click Stop Fallback to transcribe and send.</p>}
 
+      {autoDetectedMode && ttsMode === "server" && (
+        <p className="eva-note">Browser TTS is unavailable — auto-selected server TTS fallback.</p>
+      )}
+
+      {ttsFallbackStatus === "fallback-activated" && ttsFallbackDetail && (
+        <p className="eva-note">{ttsFallbackDetail}</p>
+      )}
+
       {!serverSttEnabled && (
         <p className="eva-note">Free mode: using browser STT only. Server fallback is disabled.</p>
       )}
@@ -669,7 +612,7 @@ export function VoicePanel() {
         <p className="eva-note">Free mode: Browser TTS is active. Enable server TTS fallback via NEXT_PUBLIC_ENABLE_SERVER_TTS=true.</p>
       )}
 
-      {serverTtsEnabled && ttsMode === "server" && (
+      {serverTtsEnabled && ttsMode === "server" && !autoDetectedMode && (
         <p className="eva-note">Server TTS fallback is enabled for reply playback.</p>
       )}
 
@@ -681,7 +624,7 @@ export function VoicePanel() {
         <p className="eva-note">Mic is blocked. Open your browser site settings and allow microphone access.</p>
       )}
 
-      {!speechSynthesisSupported && (
+      {!speechSynthesisSupported && !autoDetectedMode && (
         <p className="eva-note">This browser does not support Speech Synthesis.</p>
       )}
 

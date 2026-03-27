@@ -15,6 +15,19 @@ const memorySchema = new mongoose.Schema({
     type: String,
     default: "chat",
   },
+  type: {
+    type: String,
+    default: "fact",
+    enum: ["preference", "fact", "summary", "emotion"],
+  },
+  accessCount: {
+    type: Number,
+    default: 0,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
   lastAccessed: {
     type: Date,
     default: Date.now,

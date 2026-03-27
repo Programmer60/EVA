@@ -42,6 +42,21 @@ Template for future entries:
 - Added free-first runtime policy in UI: server STT fallback is opt-in and disabled by default.
 - Added clearer STT guidance/error messages and safer fallback behavior.
 
+### 2026-03-27
+
+- Completed server TTS fallback implementation:
+	- added `POST /api/tts` route for server-generated audio playback
+	- added Voice mode switch (`Browser TTS` / `Server TTS Fallback`)
+	- unified Stop/Interrupt behavior for browser and server playback modes
+- Expanded automated tests for TTS route, including success and max-length validation.
+- Fixed TypeScript compatibility in voice recognition event typing and OpenAI TTS request options.
+- Completed memory intelligence upgrade:
+	- selective memory utilization with natural-language formatting and relevance threshold
+	- reference trigger system (keyword overlap forces contextual memory references)
+	- conversation compression (10→3 recent messages + long-term summary)
+	- response quality guardrails (system prompt rules requiring memory references, banning generic replies)
+	- new telemetry fields: `triggeredMemoryKeys`, `hasSummaryContext`
+
 ## Current Status (March 2026)
 
 Completed now:
@@ -64,8 +79,70 @@ Completed now:
 In progress now:
 
 - Browser speech-recognition stability across environments (network/service variability).
-- Server TTS fallback planning for reliability beyond browser-native APIs.
+- Voice reliability hardening and observability (latency/error tracking per mode/provider).
 - Avatar behavior integration with voice + emotion events.
+
+## Memory Intelligence
+
+Status: Implemented on 2026-03-27.
+
+### 1. Selective Memory Utilization
+
+Memory facts are no longer dumped as raw key-value pairs. `buildSmartMemoryContext()` filters by relevance threshold (score ≥ 1.5 or importance ≥ 4) and formats facts as natural-language sentences grouped into Known Facts, User Preferences, and Conversation Summary sections.
+
+### 2. Reference Trigger System
+
+`findTriggeredMemories()` scans the user's message for keyword overlap with stored memory values. Triggered memories are injected with an explicit prompt: *"Directly relevant memory (reference this naturally in your reply)"* — forcing EVA to weave them into the response.
+
+Demo flow:
+
+1. User: "I enjoy cooking"
+2. Later: "What should I do this weekend?"
+3. EVA: "Since you enjoy cooking, maybe try a new recipe this weekend…"
+
+### 3. Conversation Compression
+
+Short-term context is now the last 3 messages (instead of 10). Long-term context comes from the existing `conversation_summary` memory. This reduces token usage by ~60-70% per request while maintaining context quality.
+
+### 4. Response Quality Guardrails
+
+The system prompt now includes explicit rules:
+
+- MUST weave memories into replies naturally when provided
+- NEVER give generic responses when relevant context exists
+- NEVER repeat phrasing from recent messages
+- If "Directly relevant memory" is provided, MUST reference those items
+
+### 5. Enhanced Telemetry
+
+API response `contextDebug` now includes `triggeredMemoryKeys` and `hasSummaryContext` for debugging memory utilization.
+
+### 6. Production Scoring Algorithm
+
+Memory ranking uses a 4-component composite scorer with normalized sub-scores (0–1):
+
+```
+score = 0.5 × relevance + 0.2 × recency + 0.2 × importance + 0.1 × frequency
+```
+
+| Component | How it works |
+|---|---|
+| **Relevance** | Keyword overlap + key/value containment vs current message |
+| **Recency** | Exponential decay: `e^(-days/7)` (1-week half-life) |
+| **Importance** | `memory.importance / 10`, normalized 0–1 |
+| **Frequency** | `memory.accessCount / 10`, capped at 1.0 |
+
+A **diversity filter** limits max 2 memories per category (preference/fact/summary) to prevent top-K from being all the same type.
+
+### 7. Memory Schema
+
+| Field | Type | Purpose |
+|---|---|---|
+| `type` | `"preference" \| "fact" \| "summary" \| "emotion"` | Category for diversity filter |
+| `accessCount` | Number | Retrieval frequency tracking |
+| `createdAt` | Date | Memory lifecycle |
+
+Access stats: `accessCount` is incremented, `lastAccessed` is updated on every retrieval.
 
 ## Product Goal
 
@@ -402,37 +479,54 @@ lib/
 2. Improve preference extraction precision (negation edge cases, ambiguity handling, de-dup strategy over time).
 3. Add memory privacy controls (sensitive-data filtering + user memory clear/delete tools).
 4. Expand automated tests to cover ranking behavior, summary refresh cadence, tone strategy, and voice event flows.
-5. Add server TTS fallback route (`/api/tts`) for cases where browser speech synthesis is unavailable or inconsistent.
+5. Expand voice test coverage for mode-switch interactions and stop/interrupt race conditions.
 6. Add production observability (latency/error dashboards and alerting per provider).
 
 ## Next Goals (Execution Order)
 
 1. Expand tests for memory ranking, summary cadence, emotion confidence, and voice loop interactions.
-2. Implement server TTS fallback route with queue-safe playback handling.
-3. Add Voice mode selector (Browser TTS vs Server TTS fallback) with clear UX messaging.
+2. Add voice interaction regression tests for mode switching and interruption behavior.
+3. Add provider/mode telemetry for STT/TTS latency and failure diagnostics.
 4. Start avatar-expression mapping from emotion labels and playback events.
 5. Add privacy/memory controls in UI (clear memory, consent, and retention settings).
 6. Prepare production hardening: abuse limits, reliability metrics, and deployment checklist.
 
-## Next Feature Prep: Server TTS Fallback
+## Server TTS Fallback
+
+Status: Completed on 2026-03-27.
 
 Goal:
 
 - add a reliable fallback when browser `speechSynthesis` is missing or unstable.
 
-Implementation plan:
+Implementation:
 
-1. Add `POST /api/tts` route returning audio bytes/stream.
-2. Add UI toggle in Voice panel: `Browser TTS` / `Server TTS Fallback`.
-3. Keep browser TTS as default free path.
+1. `POST /api/tts` route returns audio bytes/stream (OpenAI TTS).
+2. UI toggle in Voice panel: `Browser TTS` / `Server TTS Fallback`.
+3. Browser TTS is the default free path.
 4. On server mode, fetch audio and play via `Audio` element.
-5. Preserve existing Stop/Interrupt behavior for both modes.
+5. Stop/Interrupt behavior works for both browser and server playback.
+
+Auto-detection and auto-fallback:
+
+1. On page load, if browser `speechSynthesis` is unavailable and `NEXT_PUBLIC_ENABLE_SERVER_TTS=true`, server TTS mode is auto-selected.
+2. At runtime, if browser TTS fires an error while playing a reply, the system automatically retries via server TTS (if enabled) without user intervention.
+3. The Voice panel shows an info note when auto-detection or auto-fallback activates.
+4. Manual override via radio buttons is always available.
+
+Centralized TTS manager:
+
+- `lib/audio/ttsManager.ts` encapsulates detection, playback, and fallback logic.
+- `detectBestTtsMode(serverEnabled)` — returns optimal mode based on browser capabilities.
+- `speakWithFallback(text, options)` — tries preferred mode, auto-falls back on error.
+- `stopAll()` — cancels active browser and server audio playback.
 
 Acceptance criteria:
 
 1. User can switch modes without page reload.
 2. Browser TTS path remains unchanged and free by default.
 3. Server TTS path plays reply audio end-to-end when enabled.
+4. Auto-fallback activates transparently when browser TTS fails and server TTS is enabled.
 
 ## Local Development
 

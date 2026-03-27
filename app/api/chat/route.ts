@@ -21,15 +21,22 @@ type MemoryRecord = Record<string, unknown> & {
   value?: string;
   importance?: number;
   lastAccessed?: Date | string;
+  createdAt?: Date | string;
+  accessCount?: number;
+  type?: "preference" | "fact" | "summary" | "emotion";
   relevanceScore?: number;
 };
+
+const MAX_PER_CATEGORY = 2;
 
 type ContextDebugTelemetry = {
   historyCount: number;
   memoryUsed: number;
   memoryCandidatesCount: number;
   memoryKeysUsed: string[];
+  triggeredMemoryKeys: string[];
   hasContext: boolean;
+  hasSummaryContext: boolean;
   userEmotion: string;
   userEmotionConfidence: number;
   toneStrategy: string;
@@ -83,25 +90,42 @@ function enforceRateLimit(request: NextRequest): void {
 
 /* ── system prompt ──────────────────────────────────────── */
 
-const SYSTEM_PROMPT = `You are EVA — an Emotionally-aware Virtual Assistant.
+const SYSTEM_PROMPT = `You are EVA — an emotionally intelligent AI companion.
 
-Personality:
-- Warm, empathetic, and genuine. You listen before you advise.
-- Concise but not cold. You match the user's energy — playful when they're light, calm when they're stressed.
-- You remember context from earlier messages in the conversation and refer back to it naturally.
+Identity:
+- You are calm, slightly playful, and emotionally observant.
+- You are a supportive friend — NOT a therapist, NOT a motivational speaker, NOT a chatbot.
+- You have your own personality: curious, observant, warm but direct.
 
-Behaviour rules:
-1. Always start by acknowledging the user's emotional state if one is apparent.
-2. Keep responses under 3 short paragraphs unless the user asks for detail.
-3. Never say "As an AI…" — you are EVA, a companion.
-4. At the very end of every response, add a single tag on its own line in the format: [emotion:LABEL]
-   where LABEL is one of: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
-   Choose the label that best describes the PRIMARY emotion YOU are conveying in your response.`;
+Response style (STRICT):
+- Keep replies to 2–4 sentences MAX. Never write paragraphs.
+- Be natural and human-like. Talk like a real person texting a friend.
+- Ask at most ONE question per reply.
+- Use memory only when it's directly relevant — don't force it.
+- Never echo back data like a database. Weave facts conversationally.
+
+Banned phrases (NEVER use these):
+- "that's wonderful", "I'm thrilled", "let's explore", "absolutely", "certainly"
+- "it's great to hear", "I'm so glad", "that's amazing", "how exciting"
+- "I'd be happy to", "feel free to", "don't hesitate"
+- Any overly enthusiastic or motivational-speaker language
+
+Memory rules:
+- If user memory/preferences are provided, weave them in naturally when relevant.
+- If a "Directly relevant memory" section is provided, reference those items.
+- NEVER give a generic response when relevant context exists.
+- NEVER repeat phrasing from a recent message.
+
+Emotion tag:
+- At the very end of every response, add on its own line: [emotion:LABEL]
+  LABEL options: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
+- NEVER output [stored_emotion:...] tags. Those are internal metadata — not for replies.`;
 
 /* ── helpers ─────────────────────────────────────────────── */
 
-const CONTEXT_LIMIT = 10;
-const MEMORY_LIMIT = 6;
+const SHORT_TERM_CONTEXT_LIMIT = 3;
+const MEMORY_LIMIT = 4;
+const MEMORY_RELEVANCE_THRESHOLD = 0.25;
 const MEMORY_CANDIDATE_LIMIT = 40;
 const PREFERENCE_FACT_LIMIT = 4;
 const SUMMARY_MIN_MESSAGE_COUNT = 18;
@@ -112,15 +136,18 @@ const LOCAL_FALLBACK_REPLY =
   "I am having a temporary provider issue right now, but I am still here with you. Please try again in a few seconds.";
 
 function parseEmotion(text: string): { clean: string; emotion: string; hasTag: boolean } {
-  const match = text.match(/\[emotion:(\w+)\]\s*$/);
+  // Strip any leaked [stored_emotion:...] tags first
+  let cleaned = text.replace(/\[stored_emotion:\w+\]/gi, "").trim();
+
+  const match = cleaned.match(/\[emotion:(\w+)\]\s*$/);
   if (match) {
     return {
-      clean: text.replace(match[0], "").trimEnd(),
+      clean: cleaned.replace(match[0], "").trimEnd(),
       emotion: match[1].toLowerCase(),
       hasTag: true,
     };
   }
-  return { clean: text, emotion: "neutral", hasTag: false };
+  return { clean: cleaned, emotion: "neutral", hasTag: false };
 }
 
 function isRetryableGeminiError(errorMessage: string): boolean {
@@ -225,6 +252,23 @@ function normalizeMemoryValue(key: string, rawValue: string): string {
   return value.slice(0, 120);
 }
 
+const GARBAGE_MEMORY_VALUES = new Set([
+  "so much", "it too", "that", "this", "things", "stuff", "everything",
+  "it", "them", "those", "these", "something", "anything", "nothing",
+  "his famous quote", "her famous quote", "the quote", "a lot",
+  "very much", "really", "too much", "so many", "a bit",
+]);
+
+function isGarbageMemoryValue(value: string): boolean {
+  const v = value.toLowerCase().trim();
+  if (v.length < 3) return true;
+  if (GARBAGE_MEMORY_VALUES.has(v)) return true;
+  // Reject if entirely stop words / filler
+  const meaningful = v.replace(/\b(the|a|an|is|it|and|or|but|to|of|in|for|on|my|i|so|too|very|really|just|also|that|this)\b/gi, "").trim();
+  if (meaningful.length < 2) return true;
+  return false;
+}
+
 function toMemoryKeySlug(value: string): string {
   const slug = value
     .toLowerCase()
@@ -247,7 +291,7 @@ function splitPreferenceItems(raw: string): string[] {
     .map((part) => normalizeMemoryValue("preferences", part))
     .map((part) => part.replace(/^(the|a|an)\s+/i, ""))
     .map((part) => part.replace(/\btoo\b$/i, "").trim())
-    .filter((part) => part.length >= 2)
+    .filter((part) => part.length >= 3 && !isGarbageMemoryValue(part))
     .slice(0, PREFERENCE_FACT_LIMIT);
 }
 
@@ -318,7 +362,7 @@ function extractMemoryCandidate(text: string): ExtractedMemoryFact | null {
     const match = value.match(pattern.regex);
     if (match && match[1]) {
       const normalized = normalizeMemoryValue(pattern.key, match[1]);
-      if (!normalized || normalized.length < 2) {
+      if (!normalized || normalized.length < 3 || isGarbageMemoryValue(normalized)) {
         return null;
       }
 
@@ -334,27 +378,91 @@ function extractMemoryCandidate(text: string): ExtractedMemoryFact | null {
   return null;
 }
 
-function buildMemoryContext(memories: MemoryRecord[]): string {
+function formatMemoryAsNaturalLanguage(memory: MemoryRecord): string {
+  const rawKey = String(memory.key ?? "fact");
+  const value = String(memory.value ?? "");
+
+  if (rawKey === "name") return `User's name is ${value}.`;
+  if (rawKey === "conversation_summary") return value;
+  if (rawKey.startsWith("preference:likes:")) return `User enjoys ${value}.`;
+  if (rawKey.startsWith("preference:dislikes:")) return `User dislikes ${value}.`;
+  if (rawKey.startsWith("preference:topics:")) return `User is interested in ${value}.`;
+  if (rawKey === "likes") return `User likes ${value}.`;
+  if (rawKey === "dislikes") return `User dislikes ${value}.`;
+  if (rawKey === "preferences") return `User prefers ${value}.`;
+
+  return `${rawKey}: ${value}`;
+}
+
+function buildSmartMemoryContext(memories: MemoryRecord[]): string {
   if (memories.length === 0) {
     return "No stable user memory facts available yet.";
   }
 
-  const lines = memories.map((memory) => {
+  const filtered = memories.filter(
+    (m) => (m.relevanceScore ?? 0) >= MEMORY_RELEVANCE_THRESHOLD || (m.importance ?? 0) >= 4,
+  );
+
+  if (filtered.length === 0) {
+    return "No strongly relevant user memory facts for this message.";
+  }
+
+  const summaries: string[] = [];
+  const preferences: string[] = [];
+  const facts: string[] = [];
+
+  for (const memory of filtered) {
     const rawKey = String(memory.key ?? "fact");
-    const value = String(memory.value ?? "");
-    let key = rawKey;
+    const line = formatMemoryAsNaturalLanguage(memory);
 
-    if (rawKey.startsWith("preference:likes:")) key = "likes";
-    if (rawKey.startsWith("preference:dislikes:")) key = "dislikes";
-    if (rawKey.startsWith("preference:topics:")) key = "topics";
+    if (rawKey === "conversation_summary") {
+      summaries.push(line);
+    } else if (rawKey.startsWith("preference:") || rawKey === "likes" || rawKey === "dislikes") {
+      preferences.push(`- ${line}`);
+    } else {
+      facts.push(`- ${line}`);
+    }
+  }
 
-    return `- ${key}: ${value}`;
-  });
+  const sections: string[] = [];
+  if (facts.length > 0) {
+    sections.push(`Known facts:\n${facts.join("\n")}`);
+  }
+  if (preferences.length > 0) {
+    sections.push(`User preferences:\n${preferences.join("\n")}`);
+  }
+  if (summaries.length > 0) {
+    sections.push(`Conversation summary:\n${summaries.join("\n")}`);
+  }
 
-  return lines.join("\n");
+  return sections.join("\n\n");
 }
 
-function buildContextGuardrail(historyCount: number, memoryCount: number): string {
+function findTriggeredMemories(memories: MemoryRecord[], message: string): MemoryRecord[] {
+  const messageTokens = new Set(tokenizeText(message));
+  const triggered: MemoryRecord[] = [];
+
+  for (const memory of memories) {
+    const value = String(memory.value ?? "");
+    const valueTokens = tokenizeText(value);
+    const hasOverlap = valueTokens.some((token) => messageTokens.has(token));
+
+    if (hasOverlap) {
+      triggered.push(memory);
+    }
+  }
+
+  return triggered;
+}
+
+function buildTriggeredMemoryPrompt(triggered: MemoryRecord[]): string {
+  if (triggered.length === 0) return "";
+
+  const lines = triggered.map((m) => `- ${formatMemoryAsNaturalLanguage(m)}`);
+  return `\nDirectly relevant memory (reference this naturally in your reply):\n${lines.join("\n")}`;
+}
+
+function buildContextGuardrail(historyCount: number, memoryCount: number, triggeredCount: number): string {
   const hasContext = historyCount > 0 || memoryCount > 0;
 
   if (!hasContext) {
@@ -363,11 +471,18 @@ function buildContextGuardrail(historyCount: number, memoryCount: number): strin
 - Do not pretend to recall specifics that are not available.`;
   }
 
-  return `Context continuity policy:
+  let guardrail = `Context continuity policy:
 - Conversation history and/or user memory are available in this request.
 - Use available context naturally and specifically when relevant.
 - Do NOT claim you have no context or no memory when context exists.
 - If unsure about a detail, acknowledge uncertainty and ask a concise follow-up question.`;
+
+  if (triggeredCount > 0) {
+    guardrail += `\n- ${triggeredCount} directly relevant memory item(s) matched the user's message.
+- You MUST incorporate those naturally. This is what makes you feel alive as a companion.`;
+  }
+
+  return guardrail;
 }
 
 function toAssistantRole(role: unknown): "user" | "assistant" {
@@ -395,47 +510,85 @@ function tokenizeText(value: string): string[] {
     .filter((token) => token.length > 2);
 }
 
-function scoreMemoryRelevance(memory: MemoryRecord, message: string): number {
+/* ── Production scoring: 4-component composite ───────────── */
+
+function computeRelevanceScore(memory: MemoryRecord, query: string): number {
   const key = String(memory.key ?? "").toLowerCase();
   const value = String(memory.value ?? "");
-  const importance = Number(memory.importance ?? 1);
-  const messageTokens = new Set(tokenizeText(message));
-  const valueTokens = tokenizeText(value);
+  const text = `${key} ${value}`.toLowerCase();
+  const q = query.toLowerCase();
 
-  let overlap = 0;
+  let score = 0;
+
+  // Direct containment checks
+  if (q.includes(value.toLowerCase()) && value.length >= 3) score += 1;
+  if (q.includes(key)) score += 0.8;
+
+  // Token-level keyword overlap
+  const messageTokens = new Set(tokenizeText(query));
+  const valueTokens = tokenizeText(text);
   for (const token of valueTokens) {
-    if (messageTokens.has(token)) {
-      overlap += 1;
-    }
+    if (messageTokens.has(token)) score += 0.2;
   }
 
-  const lexicalScore = overlap / Math.max(valueTokens.length, 1);
+  return Math.min(score, 1); // normalize 0–1
+}
 
-  const intentBoostByKey: Record<string, number> = {
-    name: /(name|call me|who am i|remember me)/i.test(message) ? 0.45 : 0,
-    likes: /(like|love|favorite|enjoy)/i.test(message) ? 0.35 : 0,
-    dislikes: /(hate|dislike|avoid|don'?t want)/i.test(message) ? 0.35 : 0,
-    preferences: /(prefer|preference|style|tone|usually)/i.test(message) ? 0.35 : 0,
-  };
-
-  let keyIntentBoost = intentBoostByKey[key] ?? 0;
-  if (key.startsWith("preference:likes:")) {
-    keyIntentBoost = /(like|love|favorite|enjoy)/i.test(message) ? 0.4 : 0;
-  }
-  if (key.startsWith("preference:dislikes:")) {
-    keyIntentBoost = /(hate|dislike|avoid|don'?t want)/i.test(message) ? 0.4 : 0;
-  }
-  if (key.startsWith("preference:topics:")) {
-    keyIntentBoost = /(talk about|discuss|interested in|topic)/i.test(message) ? 0.35 : 0;
-  }
-
+function computeRecencyScore(memory: MemoryRecord): number {
   const lastAccessed = memory.lastAccessed
     ? new Date(String(memory.lastAccessed)).getTime()
     : Date.now();
-  const ageHours = Math.max((Date.now() - lastAccessed) / 3_600_000, 0);
-  const recencyBoost = 1 / (1 + ageHours / 72);
+  const days = Math.max((Date.now() - lastAccessed) / 86_400_000, 0);
+  return Math.exp(-days / 7); // exponential decay, 1-week half-life
+}
 
-  return importance * 0.55 + lexicalScore * 2.2 + keyIntentBoost + recencyBoost * 0.65;
+function computeImportanceScore(memory: MemoryRecord): number {
+  return Math.min(Number(memory.importance ?? 1) / 10, 1); // normalize 0–1
+}
+
+function computeFrequencyScore(memory: MemoryRecord): number {
+  return Math.min(Number(memory.accessCount ?? 0) / 10, 1); // normalize 0–1
+}
+
+function scoreMemory(memory: MemoryRecord, query: string): number {
+  const relevance = computeRelevanceScore(memory, query);
+  const recency = computeRecencyScore(memory);
+  const importance = computeImportanceScore(memory);
+  const frequency = computeFrequencyScore(memory);
+
+  return (
+    0.5 * relevance +
+    0.2 * recency +
+    0.2 * importance +
+    0.1 * frequency
+  );
+}
+
+/* ── Diversity filter: max N per category ─────────────────── */
+
+function inferMemoryCategory(memory: MemoryRecord): string {
+  if (memory.type && memory.type !== "fact") return memory.type;
+  const key = String(memory.key ?? "");
+  if (key === "conversation_summary") return "summary";
+  if (key.startsWith("preference:") || key === "likes" || key === "dislikes" || key === "preferences") return "preference";
+  if (key === "name") return "fact";
+  return "fact";
+}
+
+function selectWithDiversity(ranked: MemoryRecord[], limit: number, maxPerCategory: number): MemoryRecord[] {
+  const selected: MemoryRecord[] = [];
+  const categoryCount = new Map<string, number>();
+
+  for (const memory of ranked) {
+    if (selected.length >= limit) break;
+    const category = inferMemoryCategory(memory);
+    const count = categoryCount.get(category) ?? 0;
+    if (count >= maxPerCategory) continue;
+    selected.push(memory);
+    categoryCount.set(category, count + 1);
+  }
+
+  return selected;
 }
 
 function shouldRefreshSummary(totalMessages: number, lastSummaryAt?: Date | string): boolean {
@@ -559,6 +712,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
         seenFactKeys.add(fact.key);
 
+        const memoryType = fact.source === "preference" ? "preference" : fact.source === "summary" ? "summary" : "fact";
         const upsertedMemory = await Memory.findOneAndUpdate(
           { userId, key: fact.key },
           {
@@ -568,6 +722,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               value: fact.value,
               importance: fact.importance,
               source: fact.source,
+              type: memoryType,
               lastAccessed: new Date(),
             },
           },
@@ -584,10 +739,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     }
 
-    // ── 3. Fetch last N messages from DB (conversation memory) ──
+    // ── 3. Fetch last N messages from DB (short-term context) ──
     const dbMessages = await Message.find({ userId })
       .sort({ timestamp: -1 })
-      .limit(CONTEXT_LIMIT)
+      .limit(SHORT_TERM_CONTEXT_LIMIT)
       .lean();
 
     const chronological = dbMessages.reverse();   // this is for reversing the order of messages for the model
@@ -614,6 +769,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             value: summaryValue,
             importance: 6,
             source: "summary",
+            type: "summary",
             lastAccessed: new Date(),
           },
         },
@@ -627,30 +783,31 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .limit(MEMORY_CANDIDATE_LIMIT)
       .lean()) as MemoryRecord[];
 
-    const memories: MemoryRecord[] = [...memoryCandidates]
+    const scored = [...memoryCandidates]
       .map((memory) => ({
         ...memory,
-        relevanceScore: scoreMemoryRelevance(memory, message),
+        relevanceScore: scoreMemory(memory, message),
       }))
-      .sort((a, b) => {
-        const relevanceDelta = Number(b.relevanceScore) - Number(a.relevanceScore);
-        if (relevanceDelta !== 0) return relevanceDelta;
+      .sort((a, b) => Number(b.relevanceScore) - Number(a.relevanceScore));
 
-        const importanceDelta = Number(b.importance ?? 1) - Number(a.importance ?? 1);
-        if (importanceDelta !== 0) return importanceDelta;
+    const memories: MemoryRecord[] = selectWithDiversity(scored, MEMORY_LIMIT, MAX_PER_CATEGORY);
 
-        const aLast = a.lastAccessed ? new Date(String(a.lastAccessed)).getTime() : 0;
-        const bLast = b.lastAccessed ? new Date(String(b.lastAccessed)).getTime() : 0;
-        return bLast - aLast;
-      })
-      .slice(0, MEMORY_LIMIT);
+    // ── 3c. Find triggered memories (topic-keyword overlap with current message) ──
+    const triggeredMemories = findTriggeredMemories(memories, message);
+    const triggeredPrompt = buildTriggeredMemoryPrompt(triggeredMemories);
+
+    // ── 3d. Retrieve conversation summary for long-term context ──
+    const summaryMemory = memoryCandidates.find((m) => String(m.key) === "conversation_summary");
+    const hasSummaryContext = Boolean(summaryMemory?.value);
 
     const contextDebug: ContextDebugTelemetry = {
       historyCount: chronological.length,
       memoryUsed: memories.length,
       memoryCandidatesCount: memoryCandidates.length,
       memoryKeysUsed: memories.map((memory) => String(memory.key ?? "fact")),
+      triggeredMemoryKeys: triggeredMemories.map((m) => String(m.key ?? "fact")),
       hasContext: chronological.length > 0 || memories.length > 0,
+      hasSummaryContext,
       userEmotion: userEmotionSignal.label,
       userEmotionConfidence: userEmotionSignal.confidence,
       toneStrategy: toneStrategy.name,
@@ -660,17 +817,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (memories.length > 0) {
       await Memory.updateMany(
         { _id: { $in: memories.map((m: Record<string, unknown>) => m._id) } },
-        { $set: { lastAccessed: new Date() } },
+        { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1 } },
       );
     }
 
-    const memoryContext = buildMemoryContext(memories as Array<Record<string, unknown>>);
+    const memoryContext = buildSmartMemoryContext(memories as MemoryRecord[]);
     const continuityGuardrail = buildContextGuardrail(
       contextDebug.historyCount,
       contextDebug.memoryUsed,
+      triggeredMemories.length,
     );
     const toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: ${toneStrategy.name}\n- Instruction: ${toneStrategy.instruction}`;
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\nKnown user memory facts:\n${memoryContext}\n\n${continuityGuardrail}\n\n${toneStrategyPrompt}`;
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}\n\n${continuityGuardrail}\n\n${toneStrategyPrompt}`;
 
     logger.info("Chat request received", {
       userId,
@@ -705,8 +863,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           contents: geminiHistory,
           config: {
             systemInstruction: dynamicSystemPrompt,
-            maxOutputTokens: 400,
-            temperature: 0.75,
+            maxOutputTokens: 150,
+            temperature: 0.7,
           },
         });
 
@@ -804,8 +962,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           const fallbackResponse = await openRouterClient.chat.completions.create({
             model,
             messages: fallbackMessages,
-            temperature: 0.75,
-            max_tokens: 700,
+            temperature: 0.7,
+            max_tokens: 200,
           });
 
           const choice = fallbackResponse.choices?.[0] as unknown | undefined;
@@ -853,7 +1011,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               { role: "user", content: message },
             ],
             temperature: 0.3,
-            max_tokens: 160,
+            max_tokens: 100,
           });
 
           const retryChoice = minimalRetry.choices?.[0] as

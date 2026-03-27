@@ -34,7 +34,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       model,
       voice,
       input: text,
-      format: "mp3",
     });
 
     const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
