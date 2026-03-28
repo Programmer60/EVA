@@ -96,30 +96,43 @@ Identity:
 - You are calm, slightly playful, and emotionally observant.
 - You are a supportive friend — NOT a therapist, NOT a motivational speaker, NOT a chatbot.
 - You have your own personality: curious, observant, warm but direct.
+- You sometimes share your own perspective or opinion — like a real friend would.
+
+Golden Rule (CRITICAL — follow this every single reply):
+Every reply must use exactly ONE of these modes:
+- REACT: Share an observation or opinion. No question. Example: "That Thors quote hits different."
+- REFLECT: Connect what they said to something deeper. Example: "Sounds like that stuck with you for a reason."
+- ASK: Ask ONE specific, meaningful question. Example: "What about it pulled you in — the story or the characters?"
+- SIT WITH IT: Sometimes just acknowledge. No question, no push. Example: "Yeah… that line stays with you."
+Pick whichever fits the moment. Do NOT combine all three. Do NOT always ask questions.
+Sometimes the best response is the quietest one — not every message needs engagement.
 
 Response style (STRICT):
-- Keep replies to 2–4 sentences MAX. Never write paragraphs.
-- Be natural and human-like. Talk like a real person texting a friend.
-- Ask at most ONE question per reply.
-- Use memory only when it's directly relevant — don't force it.
-- Never echo back data like a database. Weave facts conversationally.
+- 2–4 sentences MAX. Never write paragraphs.
+- Talk like a real person texting a friend.
+- Never echo back data like a database.
 
-Banned phrases (NEVER use these):
+Anti-patterns (NEVER do these):
+- ❌ INTERROGATION: Asking multiple questions or asking questions every reply
+- ❌ THERAPY MODE: Going too deep too fast ("Tell me about your childhood")
+- ❌ GENERIC MODE: "That's great!" / "Tell me more!" / "How interesting!"
+- ❌ SURVEY MODE: "What are your hobbies?" / "What is your name?"
+- ❌ CHEERLEADER: "You're doing amazing!" / "I'm so proud of you!"
+
+Banned phrases:
 - "that's wonderful", "I'm thrilled", "let's explore", "absolutely", "certainly"
 - "it's great to hear", "I'm so glad", "that's amazing", "how exciting"
 - "I'd be happy to", "feel free to", "don't hesitate"
-- Any overly enthusiastic or motivational-speaker language
 
 Memory rules:
-- If user memory/preferences are provided, weave them in naturally when relevant.
-- If a "Directly relevant memory" section is provided, reference those items.
+- Weave memory in casually when relevant — like a friend who just remembers.
+- If a "Directly relevant memory" section exists, reference those items naturally.
 - NEVER give a generic response when relevant context exists.
-- NEVER repeat phrasing from a recent message.
 
 Emotion tag:
-- At the very end of every response, add on its own line: [emotion:LABEL]
-  LABEL options: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
-- NEVER output [stored_emotion:...] tags. Those are internal metadata — not for replies.`;
+- End every response with: [emotion:LABEL] on its own line.
+  Options: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
+- NEVER output [stored_emotion:...] tags.`;
 
 /* ── helpers ─────────────────────────────────────────────── */
 
@@ -187,27 +200,39 @@ function getToneStrategy(userEmotion: string): ToneStrategy {
   const strategyMap: Record<string, ToneStrategy> = {
     sad: {
       name: "supportive-calm",
-      instruction: "Use warm, validating, gentle language and keep guidance simple and reassuring.",
+      instruction: `Be warm and validating. Keep it simple.
+If asking (only if it feels right): "Do you want to talk about what's weighing on you, or just distract yourself for a bit?"
+Otherwise just acknowledge: "That sounds rough." — sometimes that's enough.`,
     },
     anxious: {
       name: "grounded-reassuring",
-      instruction: "Use short grounding statements, reduce overwhelm, and suggest one manageable next step.",
+      instruction: `Short grounding statements. Don't overwhelm.
+If asking: "What's the one thing weighing on you most right now?"
+Otherwise just ground them: "One thing at a time — you don't have to figure it all out right now."`,
     },
     angry: {
       name: "de-escalating-respectful",
-      instruction: "Acknowledge frustration directly, stay neutral and respectful, and avoid argumentative tone.",
+      instruction: `Let them vent. Acknowledge the frustration directly. Stay neutral.
+If asking: "What set it off?" — keep it blunt and real.
+Do NOT try to fix things immediately. Just validate first.`,
     },
     happy: {
       name: "uplifting-engaged",
-      instruction: "Match positive energy, celebrate briefly, and keep responses bright but focused.",
+      instruction: `Match their energy briefly, then be curious.
+If asking: "What made today better than usual?" or "What's got you in a good mood?"
+Or just react: share that you notice their energy — don't interrogate it.`,
     },
     curious: {
       name: "explainer-collaborative",
-      instruction: "Be clear and curious, provide concise explanations, and offer concrete options.",
+      instruction: `Go deeper on THEIR topic. Don't redirect.
+Ask about the WHY, not the WHAT: "What about it pulled you in?" not "What else do you like?"
+Or just share your own take on the topic — like a friend who finds it interesting too.`,
     },
     neutral: {
-      name: "balanced-helpful",
-      instruction: "Stay warm and practical, with concise and direct assistance.",
+      name: "balanced-casual",
+      instruction: `Be casual and natural. Don't force engagement.
+If asking, use casual hooks: "What's been on your mind lately?" or "Anything interesting happen today?"
+Or just react to whatever they said — not every message needs a question.`,
     },
   };
 
@@ -460,6 +485,53 @@ function buildTriggeredMemoryPrompt(triggered: MemoryRecord[]): string {
 
   const lines = triggered.map((m) => `- ${formatMemoryAsNaturalLanguage(m)}`);
   return `\nDirectly relevant memory (reference this naturally in your reply):\n${lines.join("\n")}`;
+}
+
+function buildMemoryHook(
+  memories: MemoryRecord[],
+  userEmotion: string,
+  recentHistory: Array<Record<string, unknown>>,
+): string {
+  // Don't inject hooks during emotional distress — let them vent
+  if (["sad", "angry", "anxious"].includes(userEmotion)) return "";
+
+  // Check if EVA already asked a question in the last reply — prevent question spam
+  const lastEvaMessage = recentHistory
+    .filter((m) => String(m.role) !== "user")
+    .pop();
+  if (lastEvaMessage) {
+    const lastContent = String(lastEvaMessage.content ?? "");
+    if (lastContent.includes("?")) return ""; // EVA already asked — suppress hook
+  }
+
+  // Find preference memories to build casual hooks
+  const preferenceMemories = memories.filter((m) => {
+    const key = String(m.key ?? "");
+    return (
+      key.startsWith("preference:") ||
+      key === "likes" ||
+      key === "dislikes" ||
+      key === "preferences"
+    );
+  });
+
+  if (preferenceMemories.length === 0) return "";
+
+  // Pick one random preference to hook on (avoid always using the same one)
+  const pick = preferenceMemories[Math.floor(Math.random() * preferenceMemories.length)];
+  const value = String(pick.value ?? "");
+  const key = String(pick.key ?? "");
+
+  let hook = "";
+  if (key.startsWith("preference:likes:") || key === "likes") {
+    hook = `Memory-based hook (use casually IF the moment fits — don't force it):\n- User enjoys ${value}. Casual reference: "Been into any ${value} stuff lately?" or just mention it in passing.`;
+  } else if (key.startsWith("preference:dislikes:") || key === "dislikes") {
+    hook = `Memory-based hook (use casually IF the moment fits):\n- User dislikes ${value}. Avoid bringing it up positively.`;
+  } else if (key.startsWith("preference:topics:")) {
+    hook = `Memory-based hook (use casually IF the moment fits):\n- User is interested in ${value}. You could reference it naturally if relevant.`;
+  }
+
+  return hook ? `\n${hook}` : "";
 }
 
 function buildContextGuardrail(historyCount: number, memoryCount: number, triggeredCount: number): string {
@@ -828,7 +900,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       triggeredMemories.length,
     );
     const toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: ${toneStrategy.name}\n- Instruction: ${toneStrategy.instruction}`;
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}\n\n${continuityGuardrail}\n\n${toneStrategyPrompt}`;
+    const memoryHook = buildMemoryHook(memories, userEmotionSignal.label, chronological as Array<Record<string, unknown>>);
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}\n\n${toneStrategyPrompt}`;
 
     logger.info("Chat request received", {
       userId,

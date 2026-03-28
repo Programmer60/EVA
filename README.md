@@ -57,6 +57,14 @@ Template for future entries:
 	- response quality guardrails (system prompt rules requiring memory references, banning generic replies)
 	- new telemetry fields: `triggeredMemoryKeys`, `hasSummaryContext`
 
+### 2026-03-29
+
+- Conversational intelligence upgrade:
+	- Golden Rule: EVA picks ONE mode per reply (react / reflect / ask)
+	- Emotion-specific conversational hooks in tone strategies
+	- Memory-based follow-up hooks with question-spam prevention
+	- Anti-pattern bans (interrogation, therapy, generic, survey, cheerleader)
+
 ## Current Status (March 2026)
 
 Completed now:
@@ -143,6 +151,40 @@ A **diversity filter** limits max 2 memories per category (preference/fact/summa
 | `createdAt` | Date | Memory lifecycle |
 
 Access stats: `accessCount` is incremented, `lastAccessed` is updated on every retrieval.
+
+## Conversational Intelligence
+
+Status: Implemented on 2026-03-29.
+
+### Golden Rule
+
+Every EVA reply uses exactly ONE mode:
+- **React** — share an observation or opinion, no question
+- **Reflect** — connect what they said to something deeper
+- **Ask** — one specific, meaningful question
+
+### Anti-Patterns (Explicitly Banned)
+
+| Pattern | What it means |
+|---|---|
+| Interrogation | Asking multiple questions or asking every reply |
+| Therapy mode | Going too deep too fast |
+| Generic mode | "That's great!" / "Tell me more!" |
+| Survey mode | "What are your hobbies?" |
+| Cheerleader | "You're doing amazing!" |
+
+### Emotion-Specific Hooks
+
+Each tone strategy includes contextual question templates. Example:
+- Sad → "Do you want to talk about it, or just distract yourself for a bit?"
+- Happy → "What made today better than usual?"
+- Angry → "What set it off?" (blunt and real)
+
+### Memory-Based Conversational Hooks
+
+`buildMemoryHook()` generates casual follow-up suggestions from stored preferences. Suppressed when:
+- User emotion is sad/angry/anxious (let them vent)
+- EVA already asked a question in the last reply (prevents question spam)
 
 ## Product Goal
 
