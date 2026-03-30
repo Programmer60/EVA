@@ -65,6 +65,23 @@ Template for future entries:
 	- Memory-based follow-up hooks with question-spam prevention
 	- Anti-pattern bans (interrogation, therapy, generic, survey, cheerleader)
 
+### 2026-03-31
+
+- Completed Phase 3 Structured ML Data Telemetry:
+	- Added `TrainingInteraction` Mongoose schema to export clean `(input, predictedEmotion, reply, memoryUsed)` dataset rows.
+	- Added `PATCH /api/feedback` endpoint to capture ground truth signals.
+	- Upgraded `ChatPanel.tsx` UI to respectfully collect `Does this feel right? 🙂 🙁` and `Helpful? 👍👎` scores.
+- Implemented Architecture Stability & Safety Middlewares (`route.ts`):
+	- **Response Compressor (`compressAndCleanReply`)**: Truncates LLM over-generation to ~230 chars without breaking sentences, mathematically limits output to 1 question mark, and prevents `[pause]` spamming.
+	- **Memory Extraction Cleaner**: Added strict filters to `extractMemoryCandidate` to permanently block garbage text (`< 5` chars, "so much", "you eva", affirmation words) from polluting database ranking.
+	- **Dependency Safety Layer**: Explicitly programmed system instruction to handle over-attachment ("I love you", "You comfort me") by keeping EVA grounded and encouraging real-world connections.
+- Upgraded Heuristic Emotion Parser (`inferEmotionSignalFromText`):
+	- **Nostalgia & Bittersweet Detection**: Boosts `nostalgic` confidence if past-tense framing is mixed with positive/negative signals.
+	- **Hard Overrides**: Keywords like "heartbreaking" automatically bypass heuristic thresholds to force a `sad` 0.95 response.
+	- **Negativity Bias**: Resolves toxic positivity bugs by letting negative emotion signals outweigh generic positive tags like "anime" or "beautiful".
+	- **Curious False-Positive Dampening**: Curiosity ratings plummet if no explicit `?` mark exists in the user's string.
+	- **Regex Hotfix**: Enforced word boundaries `\b` to prevent substring triggering (e.g., "made" triggering "mad").
+
 ## Current Status (March 2026)
 
 Completed now:

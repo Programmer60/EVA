@@ -22,6 +22,11 @@ export interface TtsCallbacks {
   onStatusChange?: (status: TtsFallbackStatus, detail?: string) => void;
 }
 
+export type VoiceBehavior = {
+  speechRate?: number;
+  pitch?: number;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Module-level state (singleton per page)                            */
 /* ------------------------------------------------------------------ */
@@ -91,6 +96,7 @@ export function stopAll(): void {
 function speakWithBrowserTts(
   text: string,
   requestId: number,
+  behavior?: VoiceBehavior
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!isBrowserTtsAvailable()) {
@@ -99,8 +105,10 @@ function speakWithBrowserTts(
     }
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
+    utterance.rate = behavior?.speechRate ?? 1;
+    utterance.pitch = behavior?.pitch !== undefined 
+      ? 1 + (behavior.pitch * 0.1) // typical pitch range is 0-2 (default 1). If we pass -2, it becomes 0.8
+      : 1;
     activeUtterance = utterance;
 
     utterance.onend = () => {
@@ -199,9 +207,10 @@ export async function speakWithFallback(
     preferredMode: TtsMode;
     serverTtsEnabled: boolean;
     callbacks?: TtsCallbacks;
+    behavior?: VoiceBehavior;
   },
 ): Promise<TtsMode> {
-  const { preferredMode, serverTtsEnabled, callbacks } = options;
+  const { preferredMode, serverTtsEnabled, callbacks, behavior } = options;
   const clean = text.trim();
   if (!clean) {
     return preferredMode;
@@ -231,7 +240,7 @@ export async function speakWithFallback(
   // ---- Browser-preferred path with auto-fallback ----
   callbacks?.onStatusChange?.("speaking-browser");
   try {
-    await speakWithBrowserTts(clean, requestId);
+    await speakWithBrowserTts(clean, requestId, behavior);
     callbacks?.onStatusChange?.("idle");
     return "browser";
   } catch (browserError) {

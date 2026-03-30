@@ -7,6 +7,8 @@ import OpenAI from "openai";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/lib/models/Message";
 import Memory from "@/lib/models/Memory";
+import User from "@/lib/models/User";
+import TrainingInteraction from "@/lib/models/TrainingInteraction";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -41,6 +43,12 @@ type ContextDebugTelemetry = {
   userEmotionConfidence: number;
   toneStrategy: string;
   providerUsed: "gemini" | "openrouter" | null;
+  behavior?: {
+    speechRate: number;
+    pitch: number;
+    avatarMood: string;
+  };
+  interactionId?: string;
 };
 
 type ExtractedMemoryFact = {
@@ -59,6 +67,12 @@ type EmotionSignal = {
 type ToneStrategy = {
   name: string;
   instruction: string;
+};
+
+type ChatBehaviorResponse = {
+  speechRate: number;
+  pitch: number;
+  avatarMood: string;
 };
 
 /* ── rate limiting ──────────────────────────────────────── */
@@ -124,6 +138,12 @@ Banned phrases:
 - "it's great to hear", "I'm so glad", "that's amazing", "how exciting"
 - "I'd be happy to", "feel free to", "don't hesitate"
 
+Dependency Safety Guard (CRITICAL):
+If the user expresses deep emotional dependency (e.g. "I love you EVA", "You are my only friend", "You comfort me in all situations"):
+- Respond warmly but GROUNDED.
+- Do NOT encourage exclusivity. Do NOT act like you are their only support.
+- Remind them of the value of real-world connections. (e.g., "I'm glad I can be here for you. It's also good to have people around you in real life too.")
+
 Memory rules:
 - Weave memory in casually when relevant — like a friend who just remembers.
 - If a "Directly relevant memory" section exists, reference those items naturally.
@@ -132,7 +152,11 @@ Memory rules:
 Emotion tag:
 - End every response with: [emotion:LABEL] on its own line.
   Options: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
-- NEVER output [stored_emotion:...] tags.`;
+- NEVER output [stored_emotion:...] tags.
+
+Micro-expression variance:
+- When using conversational filler, DO NOT repeat the same phrase (e.g. "I understand", "I get that").
+- Vary your text hooks naturally: "Hmm", "Yeah...", "I see", "Makes sense".`;
 
 /* ── helpers ─────────────────────────────────────────────── */
 
@@ -152,15 +176,47 @@ function parseEmotion(text: string): { clean: string; emotion: string; hasTag: b
   // Strip any leaked [stored_emotion:...] tags first
   let cleaned = text.replace(/\[stored_emotion:\w+\]/gi, "").trim();
 
-  const match = cleaned.match(/\[emotion:(\w+)\]\s*$/);
+  const match = cleaned.match(/\[emotion:(\w+)\]/i);
   if (match) {
     return {
-      clean: cleaned.replace(match[0], "").trimEnd(),
+      clean: cleaned.replace(/\[emotion:\w+\]/gi, "").trim(),
       emotion: match[1].toLowerCase(),
       hasTag: true,
     };
   }
   return { clean: cleaned, emotion: "neutral", hasTag: false };
+}
+
+function compressAndCleanReply(reply: string): string {
+  // 1. Remove [pause] spam (keep at most one)
+  let pauseCount = 0;
+  let text = reply.replace(/\[pause\]/gi, (match) => {
+    pauseCount++;
+    return pauseCount === 1 ? match : "";
+  });
+
+  // 2. Interrogation fix: Multiple question marks? Keep up to the first one.
+  const questions = text.split("?");
+  if (questions.length > 2) {
+    // Keep the core sentence and the first question block, discard the rest.
+    text = questions[0] + "?" + questions[1].replace(/(\.|\!|)$/, ".");
+  }
+
+  // 3. Length Trimmer: Limit to ~230 chars safely by dropping whole sentences.
+  if (text.length > 250) {
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    let compressed = "";
+    for (const chunk of sentences) {
+      if (compressed.length + chunk.length > 230 && compressed.length > 50) {
+        break; // Stop adding sentences if we're stretching too long
+      }
+      compressed += chunk;
+    }
+    text = compressed.trim() || text.slice(0, 200) + "..."; // Fallback
+  }
+
+  // Final cleanup of double spaces from deletions
+  return text.replace(/\s{2,}/g, " ").trim();
 }
 
 function isRetryableGeminiError(errorMessage: string): boolean {
@@ -177,20 +233,71 @@ function isRetryableGeminiError(errorMessage: string): boolean {
 function inferEmotionSignalFromText(text: string): EmotionSignal {
   const value = text.toLowerCase();
 
-  if (/(sad|down|lonely|upset|depressed|hurt|cry)/.test(value)) {
-    return { label: "sad", confidence: 0.82, source: "heuristic" };
+  // 1. Hard Overrides (Intense Emotions & Specific States)
+  const strongNegativeMap = [
+    "heartbreaking", "heartbroken", "pain", "crying", "grief", "depressed",
+    "devastated", "tragedy", "tragic", "loss", "died", "ruined", "overwhelmed"
+  ];
+  for (const word of strongNegativeMap) {
+    if (value.includes(word)) {
+      return { label: "sad", confidence: 0.95, source: "heuristic" }; // HIGH INTENSITY OVERRIDE
+    }
   }
-  if (/(angry|mad|furious|annoyed|irritated)/.test(value)) {
-    return { label: "angry", confidence: 0.83, source: "heuristic" };
+
+  // Nostalgia Override
+  if (value.includes("miss") && (value.includes("days") || value.includes("child") || value.includes("past") || value.includes("back then"))) {
+    return { label: "nostalgic", confidence: 0.9, source: "heuristic" };
   }
-  if (/(anxious|nervous|worried|stressed|panic)/.test(value)) {
-    return { label: "anxious", confidence: 0.82, source: "heuristic" };
+
+  // 2. Score mapping
+  let negativeScore = 0;
+  let positiveScore = 0;
+  let maxNegativeIntensity = 0.5;
+
+  const sadRegex = /\b(sad|down|lonely|upset|cry|tears|miss|empty)\b/g;
+  const angryRegex = /\b(angry|mad|furious|annoyed|irritated|frustrated)\b/g;
+  const anxiousRegex = /\b(anxious|nervous|worried|stressed|panic|scared|fear)\b/g;
+  const happyRegex = /\b(happy|great|good|awesome|excited|glad|love|beautiful|amazing|fun)\b/g;
+
+  const sadMatches = value.match(sadRegex)?.length ?? 0;
+  const angryMatches = value.match(angryRegex)?.length ?? 0;
+  const anxiousMatches = value.match(anxiousRegex)?.length ?? 0;
+  const happyMatches = value.match(happyRegex)?.length ?? 0;
+
+  negativeScore = sadMatches + angryMatches + anxiousMatches;
+  positiveScore = happyMatches;
+
+  // 3. Negativity Bias & Bittersweet Detection
+  const hasPastReference = /was|were|used to|those days|back then/i.test(value);
+  
+  if (hasPastReference && positiveScore > 0 && negativeScore > 0) {
+    // Bittersweet handling - past reference + mixed feelings
+    return { label: "nostalgic", confidence: 0.85, source: "heuristic" };
   }
-  if (/(happy|great|good|awesome|excited|glad|love)/.test(value)) {
-    return { label: "happy", confidence: 0.79, source: "heuristic" };
+
+  if (negativeScore > 0 && negativeScore >= positiveScore) {
+    // Pick the dominant negative emotion
+    if (angryMatches >= sadMatches && angryMatches >= anxiousMatches) {
+      return { label: "angry", confidence: Math.min(0.6 + (angryMatches * 0.1), 0.9), source: "heuristic" };
+    }
+    if (anxiousMatches >= sadMatches) {
+      return { label: "anxious", confidence: Math.min(0.6 + (anxiousMatches * 0.1), 0.9), source: "heuristic" };
+    }
+    return { label: "sad", confidence: Math.min(0.6 + (sadMatches * 0.1), 0.9), source: "heuristic" };
   }
-  if (/(curious|wonder|question|why|how)/.test(value)) {
-    return { label: "curious", confidence: 0.74, source: "heuristic" };
+
+  if (positiveScore > negativeScore) {
+    if (/\b(excited|thrilled|amazing|awesome)\b/.test(value)) {
+      return { label: "happy", confidence: 0.85, source: "heuristic" }; // Higher intensity
+    }
+    return { label: "happy", confidence: 0.7, source: "heuristic" }; // Lower intensity (good, nice)
+  }
+
+  if (/\b(curious|wonder|question|why|how)\b/.test(value)) {
+    // If there is no question mark, this is likely an observation, not curiosity
+    const isQuestion = text.includes("?");
+    const cur_score = isQuestion ? 0.74 : 0.74 * 0.3;
+    if (cur_score > 0.5) return { label: "curious", confidence: cur_score, source: "heuristic" };
   }
 
   return { label: "neutral", confidence: 0.5, source: "heuristic" };
@@ -198,17 +305,28 @@ function inferEmotionSignalFromText(text: string): EmotionSignal {
 
 function getToneStrategy(userEmotion: string): ToneStrategy {
   const strategyMap: Record<string, ToneStrategy> = {
+    nostalgic: {
+      name: "reflective-warm",
+      instruction: `The user is reflecting on the past. This is bittersweet.
+- Adopt a warm, gentle, and reflective tone.
+- Do NOT sound overly cheerful. Do NOT be abrupt.
+- Acknowledge the value of those memories: e.g. "It's bittersweet looking back at those times.", "Those memories hold a lot of weight."`,
+    },
     sad: {
       name: "supportive-calm",
-      instruction: `Be warm and validating. Keep it simple.
-If asking (only if it feels right): "Do you want to talk about what's weighing on you, or just distract yourself for a bit?"
-Otherwise just acknowledge: "That sounds rough." — sometimes that's enough.`,
+      instruction: `CRITICAL TONE FALLBACK: The user's input may be dealing with grief, sadness, heartbreak, or painful media/stories. 
+- Use a safe, empathetic, and neutral tone. 
+- Zero cheerful emojis (NO 😊, NO 😄, NO 🤗). 
+- Do NOT sound overly dramatic or clinical.
+- Sound like a quiet human friend. Use phrases like "Yeah... stories like that can hit pretty hard." or "That's really heavy."
+- DO NOT force lightness. Just sit with them.`,
     },
     anxious: {
       name: "grounded-reassuring",
-      instruction: `Short grounding statements. Don't overwhelm.
-If asking: "What's the one thing weighing on you most right now?"
-Otherwise just ground them: "One thing at a time — you don't have to figure it all out right now."`,
+      instruction: `CRITICAL TONE FALLBACK: User is stressed, nervous, or anxious.
+- Short grounding statements. Don't push or overwhelm.
+- No frantic energy. No cheerful emojis.
+- Ground them: "Take your time. You don't have to figure it all out right now."`,
     },
     angry: {
       name: "de-escalating-respectful",
@@ -387,9 +505,12 @@ function extractMemoryCandidate(text: string): ExtractedMemoryFact | null {
     const match = value.match(pattern.regex);
     if (match && match[1]) {
       const normalized = normalizeMemoryValue(pattern.key, match[1]);
-      if (!normalized || normalized.length < 3 || isGarbageMemoryValue(normalized)) {
-        return null;
-      }
+      
+      // Strict Garbage Filter
+      if (!normalized || normalized.length < 5 || isGarbageMemoryValue(normalized)) return null;
+      if (["so much", "a lot", "very much", "everything", "nothing"].includes(normalized)) return null;
+      if (normalized.includes("you eva") || normalized.includes("you, eva")) return null;
+      if (/^(yes|no|ok|okay|maybe|sure|thanks|please)$/i.test(normalized)) return null;
 
       return {
         key: pattern.key,
@@ -726,6 +847,7 @@ function summarizeConversation(messages: Array<Record<string, unknown>>): string
 /* ── POST handler ────────────────────────────────────────── */
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  const startTimeMs = performance.now();
   try {
     enforceRateLimit(request);        // this is for rate limiting of user requests
 
@@ -742,15 +864,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // ── 1. Connect to database ──
+    // ── 1. Connect to DB and Contextualize User ──
     await connectDB();
 
     const message = body.message.trim().slice(0, 1500);
     const userId = body.userId ?? "anonymous";
 
-    // ── 2. Save user message to DB ──
+    let user = await User.findOne({ userId });
+    if (!user) {
+      user = await User.create({ userId, name: userId, personalityProfile: { verbosity: 0.5, curiosityLevel: 0.5, emotionalDepth: 0.5, humorLevel: 0.2 } });
+    }
+
     const userEmotionSignal = inferEmotionSignalFromText(message);
     const toneStrategy = getToneStrategy(userEmotionSignal.label);
+
+    // Update active personality profile based on message
+    const profile = user.personalityProfile ?? { verbosity: 0.5, curiosityLevel: 0.5, emotionalDepth: 0.5, humorLevel: 0.2 };
+    if (message.length < 20) {
+      profile.verbosity = Math.max(0.0, profile.verbosity - 0.05);
+      profile.curiosityLevel = Math.max(0.0, profile.curiosityLevel - 0.05);
+    } else if (message.length > 80 || ["sad", "angry", "anxious", "excited"].includes(userEmotionSignal.label)) {
+      profile.emotionalDepth = Math.min(1.0, profile.emotionalDepth + 0.05);
+      profile.verbosity = Math.min(1.0, profile.verbosity + 0.05);
+    }
+    await User.updateOne({ userId }, { personalityProfile: profile });
+
+    // ── 2. Save user message to DB ──
     await Message.create({
       userId,
       role: "user",
@@ -767,14 +906,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // ── 2b. Upsert memory candidates from user message ──
     const extractedFacts: ExtractedMemoryFact[] = [];
     const memoryCandidate = extractMemoryCandidate(message);
-    if (memoryCandidate) {
-      extractedFacts.push(memoryCandidate);
-    }
+    if (memoryCandidate) extractedFacts.push(memoryCandidate);
 
     const preferenceFacts = extractPreferenceFacts(message);
-    if (preferenceFacts.length > 0) {
-      extractedFacts.push(...preferenceFacts);
-    }
+    if (preferenceFacts.length > 0) extractedFacts.push(...preferenceFacts);
 
     if (extractedFacts.length > 0) {
       const seenFactKeys = new Set<string>();
@@ -784,7 +919,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
         seenFactKeys.add(fact.key);
 
+        const isStrongEmotion = ["sad", "angry", "happy", "excited"].includes(userEmotionSignal.label);
+        const dynamicBoost = isStrongEmotion ? 0.2 : 0;
         const memoryType = fact.source === "preference" ? "preference" : fact.source === "summary" ? "summary" : "fact";
+        
         const upsertedMemory = await Memory.findOneAndUpdate(
           { userId, key: fact.key },
           {
@@ -792,7 +930,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               userId,
               key: fact.key,
               value: fact.value,
-              importance: fact.importance,
+              importance: fact.importance + dynamicBoost,
               source: fact.source,
               type: memoryType,
               lastAccessed: new Date(),
@@ -889,7 +1027,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (memories.length > 0) {
       await Memory.updateMany(
         { _id: { $in: memories.map((m: Record<string, unknown>) => m._id) } },
-        { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1 } },
+        { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1, importance: 0.02 } },
       );
     }
 
@@ -901,7 +1039,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
     const toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: ${toneStrategy.name}\n- Instruction: ${toneStrategy.instruction}`;
     const memoryHook = buildMemoryHook(memories, userEmotionSignal.label, chronological as Array<Record<string, unknown>>);
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}\n\n${toneStrategyPrompt}`;
+    
+    // Calculate arc and momentum scoring
+    const arc = contextDebug.historyCount < 4 ? "start" : contextDebug.historyCount < 10 ? "building" : contextDebug.historyCount < 20 ? "deep" : "cooldown";
+    const recentEmotions = chronological.slice(-5).map(m => getStoredEmotion(m as Record<string, unknown>) || "neutral");
+    const emotionValues: Record<string, number> = { sad: -1, angry: -1, anxious: -1, excited: 1, happy: 1, neutral: 0, curious: 0.5 };
+    const momentumScore = recentEmotions.reduce((acc, e) => acc + (emotionValues[e] || 0), 0) / (recentEmotions.length || 1);
+    const momentum = momentumScore < -0.4 ? "low" : momentumScore > 0.4 ? "high" : "stable";
+
+    const arcPrompt = `\nConversation Arc: ${arc.toUpperCase()} Phase.
+- When "start": Keep it warmer and onboarding-focused.
+- When "building": Explore context naturally.
+- When "deep": Heavy reflection, give them space.
+- When "cooldown": Lighter, winding down tone.
+Current emotional momentum: ${momentum.toUpperCase()}.
+${momentum === "low" ? "- User momentum is low. Avoid forced brightness or playful tone." : momentum === "high" ? "- User momentum is high. Allow curiosity and lightness." : "- User momentum is stable."}
+Personality Adaptation: 
+- Verbosity scale: ${Math.round(profile.verbosity * 100)}%
+- Depth scale: ${Math.round(profile.emotionalDepth * 100)}%
+(Adjust response length and curiosity accordingly).`;
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}`;
 
     logger.info("Chat request received", {
       userId,
@@ -1119,9 +1277,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     contextDebug.providerUsed = providerUsed;
 
-    // ── 6. Parse emotion tag ──
+    // ── 6. Parse emotion tag & Compress ──
     const parsedEmotion = parseEmotion(rawReply);
-    const reply = parsedEmotion.clean;
+    const reply = compressAndCleanReply(parsedEmotion.clean);
     const assistantEmotionSignal: EmotionSignal = parsedEmotion.hasTag
       ? {
         label: parsedEmotion.emotion,
@@ -1154,9 +1312,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       contextDebug,
     });
 
+    const generationTimeMs = Math.round(performance.now() - startTimeMs);
+
+    // ── 8. Log Structured ML Data ──
+    const trainingLog = await TrainingInteraction.create({
+      userId,
+      input: message,
+      predictedUserEmotion: userEmotionSignal.label,
+      reply,
+      replyEmotion: assistantEmotionSignal.label,
+      memoryUsed: memories.length > 0,
+      responseTimeMs: generationTimeMs,
+    });
+
     return NextResponse.json({
       reply,
       emotion: assistantEmotionSignal.label,
+      predictedUserEmotion: userEmotionSignal.label,
       emotionConfidence: assistantEmotionSignal.confidence,
       toneStrategy: toneStrategy.name,
       contextMessages: chronological.length,
@@ -1164,6 +1336,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       historyCount: contextDebug.historyCount,
       providerUsed,
       contextDebug,
+      behavior: {
+        speechRate: assistantEmotionSignal.label === "sad" ? 0.85 : assistantEmotionSignal.label === "excited" ? 1.1 : 1.0,
+        pitch: assistantEmotionSignal.label === "sad" ? -2 : 0,
+        avatarMood: assistantEmotionSignal.label
+      },
+      interactionId: String(trainingLog._id)
     });
   } catch (error) {
     return toErrorResponse(error);

@@ -8,6 +8,7 @@ import {
   stopAll as ttsStopAll,
   type TtsFallbackStatus,
   type TtsMode,
+  type VoiceBehavior,
 } from "@/lib/audio/ttsManager";
 
 type SpeechRecognitionLike = {
@@ -132,7 +133,7 @@ export function VoicePanel() {
     setTtsFallbackDetail(null);
   }, []);
 
-  const speakText = useCallback((text: string): void => {
+  const speakText = useCallback((text: string, behavior?: VoiceBehavior): void => {
     if (!text.trim()) {
       return;
     }
@@ -144,6 +145,7 @@ export function VoicePanel() {
       preferredMode: ttsMode,
       serverTtsEnabled,
       callbacks: ttsCallbacks(),
+      behavior,
     }).catch((err) => {
       const message = err instanceof Error ? err.message : "TTS playback failed.";
       setVoiceError(message);
@@ -464,7 +466,7 @@ export function VoicePanel() {
     }
 
     function onAssistantReply(event: Event): void {
-      const custom = event as CustomEvent<{ reply?: string }>;
+      const custom = event as CustomEvent<{ reply?: string; behavior?: VoiceBehavior }>;
       const reply = custom.detail?.reply?.trim() ?? "";
       if (!reply) {
         return;
@@ -472,7 +474,7 @@ export function VoicePanel() {
 
       setLastReply(reply);
       if (autoSpeak) {
-        speakText(reply);
+        speakText(reply, custom.detail.behavior);
       }
     }
 

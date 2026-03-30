@@ -6,11 +6,14 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   emotion?: string;
+  interactionId?: string;
+  feedbackGiven?: boolean;
 };
 
 type ChatApiResponse = {
   reply: string;
   emotion?: string;
+  predictedUserEmotion?: string;
   contextMessages?: number;
   historyCount?: number;
   memoryUsed?: number;
@@ -22,6 +25,12 @@ type ChatApiResponse = {
     memoryKeysUsed: string[];
     providerUsed: "gemini" | "openrouter" | null;
   };
+  behavior?: {
+    speechRate: number;
+    pitch: number;
+    avatarMood: string;
+  };
+  interactionId?: string;
 };
 
 type HistoryApiResponse = {
@@ -86,6 +95,31 @@ export function ChatPanel() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const canSend = input.trim().length > 0 && !isLoading;
+
+  async function handleFeedback(interactionId: string, msgIndex: number, score: number, overrideEmotion?: string) {
+    try {
+      const payload: Record<string, any> = { interactionId };
+      if (score !== 0) payload.feedbackScore = score;
+      if (overrideEmotion) payload.actualUserEmotion = overrideEmotion;
+
+      await fetch("/api/feedback", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      // Mark feedback as given so UI can hide the buttons
+      setMessages(prev => {
+        const updated = [...prev];
+        if (updated[msgIndex]) {
+          updated[msgIndex].feedbackGiven = true;
+        }
+        return updated;
+      });
+    } catch {
+      // silently fail feedback logging if network errors 
+    }
+  }
 
   useEffect(() => {
     const uid = getOrCreateUserId();
@@ -186,15 +220,18 @@ export function ChatPanel() {
         throw new Error(errorMessage || "Request failed.");
       }
 
-      const assistantMsg: ChatMessage = {
-        role: "assistant",
-        content: data.reply,
-        emotion: data.emotion,
-      };
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.reply,
+            emotion: data.predictedUserEmotion ?? data.emotion ?? "neutral",
+            interactionId: data.interactionId,
+          },
+        ]);
 
-      setMessages((prev) => [...prev, assistantMsg]);
       setCurrentEmotion(data.emotion ?? "neutral");
-      setLastContextDebug(data.contextDebug);
+      if (data.contextDebug) setLastContextDebug(data.contextDebug);
       setFailedMessage(null);
 
       if (typeof window !== "undefined") {
@@ -203,6 +240,7 @@ export function ChatPanel() {
             detail: {
               reply: data.reply,
               emotion: data.emotion ?? "neutral",
+              behavior: data.behavior,
             },
           }),
         );
@@ -381,14 +419,29 @@ export function ChatPanel() {
 
         {!isLoadingHistory &&
           messages.map((item, index) => (
-            <p
-              key={`${item.role}-${index}`}
-              className={`eva-message ${item.role === "user" ? "eva-user" : "eva-assistant"}`}
-            >
-              <strong>{item.role === "user" ? "You" : "EVA"}</strong>
-              {": "}
-              {item.content}
-            </p>
+            <div key={`${item.role}-${index}`} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <p
+                className={`eva-message ${item.role === "user" ? "eva-user" : "eva-assistant"}`}
+              >
+                <strong>{item.role === "user" ? "You" : "EVA"}</strong>
+                {": "}
+                {item.content}
+              </p>
+              {item.role === "assistant" && item.interactionId && !item.feedbackGiven && (
+                <div style={{ alignSelf: "flex-start", display: "flex", gap: "8px", fontSize: "0.85rem", color: "var(--eva-muted)", alignItems: "center", marginLeft: "12px", marginBottom: "8px" }}>
+                  <span>Helpful?</span>
+                  <button onClick={() => handleFeedback(item.interactionId!, index, 1)} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 4px", fontSize: "1rem" }}>👍</button>
+                  <button onClick={() => handleFeedback(item.interactionId!, index, -1)} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 4px", fontSize: "1rem" }}>👎</button>
+                  {item.emotion && item.emotion !== "neutral" && (
+                    <span style={{ marginLeft: "12px", display: "flex", gap: "6px", alignItems: "center" }}>
+                      Does this feel right?
+                      <button onClick={() => handleFeedback(item.interactionId!, index, 0, item.emotion)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "1rem", color: "var(--eva-muted)" }}>🙂</button>
+                      <button onClick={() => handleFeedback(item.interactionId!, index, 0, "wrong")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "1rem", color: "var(--eva-muted)" }}>🙁</button>
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
 
         {isLoading && <p className="eva-note eva-thinking">EVA is thinking...</p>}
@@ -414,6 +467,9 @@ export function ChatPanel() {
             Send
           </button>
         </div>
+        <p style={{ fontSize: "0.75rem", color: "var(--eva-muted)", marginTop: "8px", textAlign: "center" }}>
+          Conversations may be anonymized and used to make EVA more emotionally intelligent.
+        </p>
       </form>
 
       {error && (
