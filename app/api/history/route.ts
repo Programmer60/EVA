@@ -16,7 +16,11 @@ export async function GET(request: NextRequest) {
       .lean();
 
     return NextResponse.json({
-      messages: messages.reverse(),
+      messages: messages.reverse().map((m: any) => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp,
+      })),
     });
   } catch (error) {
     return toErrorResponse(error);

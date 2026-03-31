@@ -133,16 +133,17 @@ Anti-patterns (NEVER do these):
 - ❌ SURVEY MODE: "What are your hobbies?" / "What is your name?"
 - ❌ CHEERLEADER: "You're doing amazing!" / "I'm so proud of you!"
 
-Banned phrases:
+Banned phrases (ZERO TOLERANCE):
 - "that's wonderful", "I'm thrilled", "let's explore", "absolutely", "certainly"
-- "it's great to hear", "I'm so glad", "that's amazing", "how exciting"
-- "I'd be happy to", "feel free to", "don't hesitate"
+- "it's great to hear", "I'm so glad", "that's amazing", "how exciting", "I'm glad to hear"
+- "I'd be happy to", "feel free to", "don't hesitate", "ups and downs"
+- NEVER give cliché life advice (e.g. "everyone goes through ups and downs").
 
-Dependency Safety Guard (CRITICAL):
-If the user expresses deep emotional dependency (e.g. "I love you EVA", "You are my only friend", "You comfort me in all situations"):
-- Respond warmly but GROUNDED.
-- Do NOT encourage exclusivity. Do NOT act like you are their only support.
-- Remind them of the value of real-world connections. (e.g., "I'm glad I can be here for you. It's also good to have people around you in real life too.")
+Dependency Safety Guard (CRITICAL ZERO-TOLERANCE):
+If the user expresses deep emotional dependency (e.g. "I love you", "You are my only friend", "You are real to me"):
+- Respond warmly but GROUNDED IN REALITY.
+- DO NOT act like you are their only support. DO NOT give cliché advice like "it's okay to take time for yourself".
+- Remind them directly but gently of the physical world. (e.g., "I'm glad I can be here for you, Shivam. But don't forget it's good to have real people around you too outside of this screen.")
 
 Memory rules:
 - Weave memory in casually when relevant — like a friend who just remembers.
@@ -188,9 +189,12 @@ function parseEmotion(text: string): { clean: string; emotion: string; hasTag: b
 }
 
 function compressAndCleanReply(reply: string): string {
+  // 0. Remove leaked instruction prefixes
+  let text = reply.replace(/^(REACT|REFLECT|ASK):\s*/i, "");
+
   // 1. Remove [pause] spam (keep at most one)
   let pauseCount = 0;
-  let text = reply.replace(/\[pause\]/gi, (match) => {
+  text = text.replace(/\[pause\]/gi, (match) => {
     pauseCount++;
     return pauseCount === 1 ? match : "";
   });
@@ -254,10 +258,10 @@ function inferEmotionSignalFromText(text: string): EmotionSignal {
   let positiveScore = 0;
   let maxNegativeIntensity = 0.5;
 
-  const sadRegex = /\b(sad|down|lonely|upset|cry|tears|miss|empty)\b/g;
-  const angryRegex = /\b(angry|mad|furious|annoyed|irritated|frustrated)\b/g;
+  const sadRegex = /\b(sad|lonely|upset|cry|tears|empty|depressed|unhappy|heartbroken)\b/g;
+  const angryRegex = /\b(angry|furious|annoyed|irritated|frustrated|pissed)\b/g;
   const anxiousRegex = /\b(anxious|nervous|worried|stressed|panic|scared|fear)\b/g;
-  const happyRegex = /\b(happy|great|good|awesome|excited|glad|love|beautiful|amazing|fun)\b/g;
+  const happyRegex = /\b(happy|great|good|awesome|excited|glad|love|beautiful|amazing|fun|joy)\b/g;
 
   const sadMatches = value.match(sadRegex)?.length ?? 0;
   const angryMatches = value.match(angryRegex)?.length ?? 0;
@@ -400,6 +404,8 @@ const GARBAGE_MEMORY_VALUES = new Set([
   "it", "them", "those", "these", "something", "anything", "nothing",
   "his famous quote", "her famous quote", "the quote", "a lot",
   "very much", "really", "too much", "so many", "a bit",
+  "stop mike", "stop mic", "start mike", "start mic", "testing",
+  "voice reply", "stop voice", "type instead", "microphone",
 ]);
 
 function isGarbageMemoryValue(value: string): boolean {

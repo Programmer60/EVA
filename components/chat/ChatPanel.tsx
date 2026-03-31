@@ -93,6 +93,10 @@ export function ChatPanel() {
   const [memoryFacts, setMemoryFacts] = useState<MemoryDebugEntry[]>([]);
   const [lastContextDebug, setLastContextDebug] = useState<ChatApiResponse["contextDebug"]>();
   const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  // Temporal Activity Timers
+  const lastActivityRef = useRef<number>(Date.now());
+  const hasTriggeredInitiative = useRef<boolean>(false);
 
   const canSend = input.trim().length > 0 && !isLoading;
 
@@ -121,6 +125,39 @@ export function ChatPanel() {
     }
   }
 
+  const triggerProactiveGreeting = useCallback(async (uid: string) => {
+    if (hasTriggeredInitiative.current) return;
+    hasTriggeredInitiative.current = true;
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/chat/initiative", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: uid }),
+      });
+      const d = await res.json();
+      if (d.reply) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: d.reply, emotion: d.emotion ?? "happy" },
+        ]);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("eva:assistant-reply", {
+              detail: { reply: d.reply, emotion: d.emotion ?? "happy" },
+            }),
+          );
+        }
+      }
+    } catch (e) {
+      console.error("Initiative failed", e);
+      hasTriggeredInitiative.current = false;
+    } finally {
+      setIsLoading(false);
+      lastActivityRef.current = Date.now();
+    }
+  }, []);
+
   useEffect(() => {
     const uid = getOrCreateUserId();
     setUserId(uid);
@@ -140,30 +177,50 @@ export function ChatPanel() {
           content: msg.content,
         }));
 
+        let shouldTriggerInitiative = false;
         if (loaded.length > 0) {
           setMessages(loaded);
+          const lastMsg: any = data.messages[data.messages.length - 1];
+          if (lastMsg && lastMsg.timestamp) {
+            lastActivityRef.current = new Date(lastMsg.timestamp).getTime();
+            const diffMs = Date.now() - lastActivityRef.current;
+            if (diffMs > 6 * 60 * 60 * 1000) { // 6 HOURS THRESHOLD
+              shouldTriggerInitiative = true;
+            }
+          }
         } else {
-          setMessages([
-            {
-              role: "assistant",
-              content: "Hi, I'm EVA. Tell me how you're feeling today.",
-            },
-          ]);
+          setMessages([]);
+          shouldTriggerInitiative = true;
         }
+
+        if (shouldTriggerInitiative) {
+          void triggerProactiveGreeting(uid);
+        }
+
       } catch {
-        setMessages([
-          {
-            role: "assistant",
-            content: "Hi, I'm EVA. Tell me how you're feeling today.",
-          },
-        ]);
+        setMessages([{ role: "assistant", content: "Hi, I'm EVA. Tell me how you're feeling today." }]);
       } finally {
         setIsLoadingHistory(false);
       }
     }
 
     loadHistory();
-  }, []);
+  }, [triggerProactiveGreeting]);
+
+  // Polling Effect for Inactivity
+  useEffect(() => {
+    if (userId === "anonymous" || isLoadingHistory || isLoading) return;
+
+    const timer = setInterval(() => {
+      if (hasTriggeredInitiative.current) return;
+      const diffMs = Date.now() - lastActivityRef.current;
+      if (diffMs > 6 * 60 * 60 * 1000) { // 6 HOURS THRESHOLD
+        void triggerProactiveGreeting(userId);
+      }
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [userId, isLoadingHistory, isLoading, triggerProactiveGreeting]);
 
   useEffect(() => {
     if (!showDebugPanel || userId === "anonymous") {
@@ -205,6 +262,8 @@ export function ChatPanel() {
   const fetchAssistantReply = useCallback(async (message: string): Promise<void> => {
     setIsLoading(true);
     setError(null);
+    lastActivityRef.current = Date.now();
+    hasTriggeredInitiative.current = false;
 
     try {
       const response = await fetch("/api/chat", {
@@ -233,6 +292,7 @@ export function ChatPanel() {
       setCurrentEmotion(data.emotion ?? "neutral");
       if (data.contextDebug) setLastContextDebug(data.contextDebug);
       setFailedMessage(null);
+      lastActivityRef.current = Date.now();
 
       if (typeof window !== "undefined") {
         window.dispatchEvent(
