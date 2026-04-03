@@ -82,7 +82,21 @@ Template for future entries:
 	- **Curious False-Positive Dampening**: Curiosity ratings plummet if no explicit `?` mark exists in the user's string.
 	- **Regex Hotfix**: Enforced word boundaries `\b` to prevent substring triggering (e.g., "made" triggering "mad").
 
-## Current Status (March 2026)
+### 2026-04-04
+
+- Completed Initiative Control System (Behavioral Intelligence):
+	- Implemented a 10-signal scoring engine ("Should EVA speak?") to proactively initiate conversation based on memory richness and emotional state.
+	- Designed 4 initiative types: `emotional_checkin`, `memory_callback`, `casual_ping`, and `silence` (logged suppression).
+	- Added anti-creep guardrails: 8-hour cooldowns, ignore detection (-5 penalty for 2+ ignored messages), and quality gates (length truncations, question limits).
+	- Integrated feedback loop: user responses patch `InitiativeLog` to boost future proactive engagement, while stale logic handles ignores.
+- Completed Emotional Presence Layer (Cognitive Latency):
+	- Integrated `presenceEngine` to calculate typing delays scaled by emotion (e.g., sad replies take 1.4x longer to start than neutral).
+	- Added sentence-by-sentence text streaming to mimic human pacing and handle `[pause]` markers explicitly returned by the LLM.
+	- Hooked a State Machine into `ChatPanel` for interruption handling (instantly flushes streaming text if user begins typing, never talking over them).
+	- Upgraded global UI with animated bouncing dots for the "thinking" phase, replacing static text.
+	- Fixed page-level auto-scroll bug by scoping auto-scroll purely to the chat history container.
+
+## Current Status (April 2026)
 
 Completed now:
 

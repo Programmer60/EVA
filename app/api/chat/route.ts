@@ -9,6 +9,7 @@ import Message from "@/lib/models/Message";
 import Memory from "@/lib/models/Memory";
 import User from "@/lib/models/User";
 import TrainingInteraction from "@/lib/models/TrainingInteraction";
+import InitiativeLog from "@/lib/models/InitiativeLog";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -875,6 +876,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const message = body.message.trim().slice(0, 1500);
     const userId = body.userId ?? "anonymous";
+
+    // Mark stale initiatives as ignored (>8h without response)
+    const INITIATIVE_STALE_MS = 8 * 60 * 60 * 1000;
+    await InitiativeLog.updateMany(
+      {
+        userId,
+        type: { $ne: "silence" },
+        userResponded: false,
+        ignored: false,
+        sentAt: { $lt: new Date(Date.now() - INITIATIVE_STALE_MS) },
+      },
+      { $set: { ignored: true } },
+    );
 
     let user = await User.findOne({ userId });
     if (!user) {

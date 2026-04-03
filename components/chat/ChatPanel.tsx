@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { getTypingDelay, chunkReply, presenceSleep } from "@/lib/presence/presenceEngine";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -93,12 +94,20 @@ export function ChatPanel() {
   const [memoryFacts, setMemoryFacts] = useState<MemoryDebugEntry[]>([]);
   const [lastContextDebug, setLastContextDebug] = useState<ChatApiResponse["contextDebug"]>();
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatBoxRef = useRef<HTMLDivElement>(null);
   
   // Temporal Activity Timers
   const lastActivityRef = useRef<number>(Date.now());
   const hasTriggeredInitiative = useRef<boolean>(false);
+  const pendingInitiativeRef = useRef<boolean>(false);
 
-  const canSend = input.trim().length > 0 && !isLoading;
+  // Presence Layer State
+  type PresencePhase = "idle" | "thinking" | "streaming" | "interrupted";
+  const [presencePhase, setPresencePhase] = useState<PresencePhase>("idle");
+  const [streamingContent, setStreamingContent] = useState<string>("");
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  const canSend = input.trim().length > 0 && !isLoading && presencePhase === "idle";
 
   async function handleFeedback(interactionId: string, msgIndex: number, score: number, overrideEmotion?: string) {
     try {
@@ -136,7 +145,16 @@ export function ChatPanel() {
         body: JSON.stringify({ userId: uid }),
       });
       const d = await res.json();
+
+      // Scoring engine returned "silence" — EVA chose not to speak
+      if (d.action === "silence") {
+        console.log("[EVA Initiative] Silence decision", { score: d.score, breakdown: d.breakdown });
+        hasTriggeredInitiative.current = false; // allow future triggers
+        return;
+      }
+
       if (d.reply) {
+        pendingInitiativeRef.current = true; // track that we're awaiting user response
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: d.reply, emotion: d.emotion ?? "happy" },
@@ -256,14 +274,27 @@ export function ChatPanel() {
   }, [showDebugPanel, userId]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+    const box = chatBoxRef.current;
+    if (box) {
+      box.scrollTop = box.scrollHeight;
+    }
+  }, [messages, isLoading, streamingContent, presencePhase]);
 
   const fetchAssistantReply = useCallback(async (message: string): Promise<void> => {
     setIsLoading(true);
     setError(null);
     lastActivityRef.current = Date.now();
     hasTriggeredInitiative.current = false;
+
+    // If user is responding after a proactive initiative, mark it as responded
+    if (pendingInitiativeRef.current && userId !== "anonymous") {
+      pendingInitiativeRef.current = false;
+      fetch("/api/chat/initiative/respond", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      }).catch(() => { /* silent */ });
+    }
 
     try {
       const response = await fetch("/api/chat", {
@@ -279,32 +310,80 @@ export function ChatPanel() {
         throw new Error(errorMessage || "Request failed.");
       }
 
+      const replyText = data.reply;
+      const replyEmotion = data.emotion ?? "neutral";
+
+      setCurrentEmotion(replyEmotion);
+      if (data.contextDebug) setLastContextDebug(data.contextDebug);
+      setFailedMessage(null);
+      setIsLoading(false);
+
+      // ── PRESENCE LAYER: THINKING Phase ──
+      const thinkDelay = getTypingDelay(replyText, replyEmotion);
+      setPresencePhase("thinking");
+
+      const abortController = new AbortController();
+      streamAbortRef.current = abortController;
+
+      try {
+        await presenceSleep(thinkDelay, abortController.signal);
+      } catch {
+        // Interrupted during thinking — flush instantly
+        setPresencePhase("idle");
+        setStreamingContent("");
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: data.reply,
-            emotion: data.predictedUserEmotion ?? data.emotion ?? "neutral",
+            content: replyText,
+            emotion: data.predictedUserEmotion ?? replyEmotion,
             interactionId: data.interactionId,
           },
         ]);
-
-      setCurrentEmotion(data.emotion ?? "neutral");
-      if (data.contextDebug) setLastContextDebug(data.contextDebug);
-      setFailedMessage(null);
-      lastActivityRef.current = Date.now();
-
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(
-          new CustomEvent("eva:assistant-reply", {
-            detail: {
-              reply: data.reply,
-              emotion: data.emotion ?? "neutral",
-              behavior: data.behavior,
-            },
-          }),
-        );
+        lastActivityRef.current = Date.now();
+        emitTtsEvent(replyText, replyEmotion, data.behavior);
+        return;
       }
+
+      // ── PRESENCE LAYER: STREAMING Phase ──
+      setPresencePhase("streaming");
+      const chunks = chunkReply(replyText, replyEmotion);
+      let accumulated = "";
+
+      for (const chunk of chunks) {
+        if (abortController.signal.aborted) break;
+
+        if (!chunk.isPause) {
+          accumulated += (accumulated ? " " : "") + chunk.text;
+          setStreamingContent(accumulated);
+        }
+
+        if (chunk.delayAfter > 0) {
+          try {
+            await presenceSleep(chunk.delayAfter, abortController.signal);
+          } catch {
+            break; // Interrupted — will flush below
+          }
+        }
+      }
+
+      // Streaming complete (or interrupted) — commit final message
+      setStreamingContent("");
+      setPresencePhase("idle");
+      streamAbortRef.current = null;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: replyText, // always commit the FULL reply
+          emotion: data.predictedUserEmotion ?? replyEmotion,
+          interactionId: data.interactionId,
+        },
+      ]);
+
+      lastActivityRef.current = Date.now();
+      emitTtsEvent(replyText, replyEmotion, data.behavior);
 
       if (showDebugPanel) {
         const memoryRes = await fetch(
@@ -322,10 +401,28 @@ export function ChatPanel() {
           : "Could not reach EVA right now.";
       setError(messageText);
       setFailedMessage(message);
-    } finally {
       setIsLoading(false);
     }
   }, [showDebugPanel, userId]);
+
+  // Helper: emit TTS event after streaming completes
+  function emitTtsEvent(reply: string, emotion: string, behavior?: ChatApiResponse["behavior"]) {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("eva:assistant-reply", {
+          detail: { reply, emotion, behavior },
+        }),
+      );
+    }
+  }
+
+  // Interruption: when user starts typing during streaming, flush instantly
+  function handleInputChange(value: string) {
+    setInput(value);
+    if (presencePhase === "thinking" || presencePhase === "streaming") {
+      streamAbortRef.current?.abort();
+    }
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -468,7 +565,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="eva-chat-box" id="eva-chat-scroll">
+      <div className="eva-chat-box" id="eva-chat-scroll" ref={chatBoxRef}>
         {isLoadingHistory && (
           <div className="eva-history-loading">
             <div className="eva-skeleton" />
@@ -504,7 +601,34 @@ export function ChatPanel() {
             </div>
           ))}
 
-        {isLoading && <p className="eva-note eva-thinking">EVA is thinking...</p>}
+        {isLoading && (
+          <div className="eva-typing-indicator">
+            <span className="eva-typing-label">EVA</span>
+            <div className="eva-typing-dots">
+              <span className="eva-typing-dot" />
+              <span className="eva-typing-dot" />
+              <span className="eva-typing-dot" />
+            </div>
+          </div>
+        )}
+
+        {presencePhase === "thinking" && !isLoading && (
+          <div className="eva-typing-indicator">
+            <span className="eva-typing-label">EVA</span>
+            <div className="eva-typing-dots">
+              <span className="eva-typing-dot" />
+              <span className="eva-typing-dot" />
+              <span className="eva-typing-dot" />
+            </div>
+          </div>
+        )}
+
+        {presencePhase === "streaming" && streamingContent && (
+          <p className="eva-message eva-assistant eva-chunk-enter">
+            <strong>EVA</strong>: {streamingContent}
+          </p>
+        )}
+
         <div ref={chatEndRef} />
       </div>
 
@@ -517,7 +641,7 @@ export function ChatPanel() {
             id="eva-message-input"
             className="eva-input"
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => handleInputChange(event.target.value)}
             placeholder="How are you feeling today?"
             maxLength={1500}
             autoComplete="off"
