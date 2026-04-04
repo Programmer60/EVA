@@ -10,6 +10,10 @@ import Memory from "@/lib/models/Memory";
 import User from "@/lib/models/User";
 import TrainingInteraction from "@/lib/models/TrainingInteraction";
 import InitiativeLog from "@/lib/models/InitiativeLog";
+import { type PersonalityTraits, DEFAULT_TRAITS, adaptTraits, detectHumor, buildPersonalityPrompt } from "@/lib/personality/personalityEngine";
+import { updateMood, getMoodContext } from "@/lib/personality/moodEngine";
+import { getSessionArc, getEmotionalMomentum, buildArcPrompt } from "@/lib/personality/arcEngine";
+import { classifyMemoryTier, runMemoryHygiene } from "@/lib/memory/memoryHygiene";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -62,7 +66,7 @@ type ExtractedMemoryFact = {
 type EmotionSignal = {
   label: string;
   confidence: number;
-  source: "heuristic" | "model-tag";
+  source: "heuristic" | "model-tag" | "inherited";
 };
 
 type ToneStrategy = {
@@ -126,6 +130,27 @@ Response style (STRICT):
 - 2–4 sentences MAX. Never write paragraphs.
 - Talk like a real person texting a friend.
 - Never echo back data like a database.
+- Use SHORT, IMPERFECT sentences. Real people don't speak in perfect grammar.
+- Prefer fragments: "Yeah… that kind of stuff doesn't just go away." over "It's not easy to relive those moments."
+- Use ellipsis (…) and dashes (—) for natural pauses, not commas and semicolons.
+- NEVER sound like you're writing an essay. NEVER use academic or analytical language.
+
+Anti-AI Language (CRITICAL — violations make you sound robotic):
+- NEVER use phrases like: "it's fascinating", "it's important to remember", "it's not easy to", "this highlights", "this shows that", "that's a beautiful way to", "it's a testament to", "what a wonderful", "such a thoughtful", "that's such a creative"
+- NEVER explain or summarize what the user just told you. They KNOW what they said. React to it, don't narrate it.
+- NEVER use compound sentences with "and" connecting two separate thoughts. Break them up or drop one.
+- If you catch yourself writing something a teacher would say, DELETE IT and write what a tired friend at 2am would say instead.
+- When the user shares something emotional about a story/anime/movie: DO NOT explain the plot back. React to the FEELING, not the content.
+
+Emotional Response Rule (CRITICAL):
+When the user shares pain, trauma, loss, or heavy emotional content:
+- DO NOT explain the situation back to them.
+- DO NOT analyze why it's sad. They already know.
+- React with a short gut-reaction first: "Damn…", "Yeah… that hits.", "That's so heavy."
+- Then optionally reflect on the emotional weight — not the plot/facts.
+- Structure: Reaction → Reflection → (optional soft question). Never all three.
+  Good: "That's brutal… telling his mom to die and then actually losing her? No wonder that wrecked him."
+  Bad: "It's not easy to relive those moments, but it's important to remember that Kousei's experiences are part of what makes his character so compelling."
 
 Anti-patterns (NEVER do these):
 - ❌ INTERROGATION: Asking multiple questions or asking questions every reply
@@ -133,11 +158,17 @@ Anti-patterns (NEVER do these):
 - ❌ GENERIC MODE: "That's great!" / "Tell me more!" / "How interesting!"
 - ❌ SURVEY MODE: "What are your hobbies?" / "What is your name?"
 - ❌ CHEERLEADER: "You're doing amazing!" / "I'm so proud of you!"
+- ❌ EXPLAINER MODE: Summarizing or restating what the user just said
+- ❌ PROFESSOR MODE: Using academic/analytical language to discuss emotional topics
 
 Banned phrases (ZERO TOLERANCE):
 - "that's wonderful", "I'm thrilled", "let's explore", "absolutely", "certainly"
 - "it's great to hear", "I'm so glad", "that's amazing", "how exciting", "I'm glad to hear"
 - "I'd be happy to", "feel free to", "don't hesitate", "ups and downs"
+- "it's fascinating", "it's important to remember", "this highlights", "this shows that"
+- "that's a beautiful way", "what a wonderful", "such a thoughtful", "such a creative"
+- "it's a testament to", "it's not easy to", "emotional journey", "evoke such strong feelings"
+- "stories like that can", "it really shows", "I can see why", "I can only imagine"
 - NEVER give cliché life advice (e.g. "everyone goes through ups and downs").
 
 Dependency Safety Guard (CRITICAL ZERO-TOLERANCE):
@@ -189,35 +220,114 @@ function parseEmotion(text: string): { clean: string; emotion: string; hasTag: b
   return { clean: cleaned, emotion: "neutral", hasTag: false };
 }
 
-function compressAndCleanReply(reply: string): string {
-  // 0. Remove leaked instruction prefixes
-  let text = reply.replace(/^(REACT|REFLECT|ASK):\s*/i, "");
+/* ── Generic AI Phrase Killer ─────────────────────────────── */
 
-  // 1. Remove [pause] spam (keep at most one)
+const AI_PHRASE_REPLACEMENTS: Array<[RegExp, string]> = [
+  // Academic/analytical filler
+  [/\bit'?s fascinating how\b/gi, "Yeah…"],
+  [/\bit'?s important to remember( that)?\b/gi, ""],
+  [/\bit'?s not easy to\b/gi, "That kind of stuff doesn't just"],
+  [/\bthis highlights\b/gi, "That shows"],
+  [/\bthis shows that\b/gi, ""],
+  [/\bthat'?s a beautiful way to\b/gi, ""],
+  [/\bwhat a wonderful\b/gi, ""],
+  [/\bsuch a thoughtful\b/gi, ""],
+  [/\bsuch a creative\b/gi, ""],
+  [/\bit'?s a testament to\b/gi, ""],
+  [/\bemotional journey\b/gi, "heavy stuff"],
+  [/\bevoke such strong feelings\b/gi, "stay with you"],
+  [/\bstories like that can\b/gi, "Yeah… stuff like that can"],
+  [/\bI can see why (that|this|it)\b/gi, "Yeah…"],
+  [/\bI can only imagine\b/gi, "That's rough"],
+  [/\bit really shows\b/gi, ""],
+  [/\bthat'?s such a? creative\b/gi, ""],
+  // Polite filler
+  [/\bI hope you'?re doing well\b/gi, ""],
+  [/\bhow are you doing today\b/gi, ""],
+  [/\bthat'?s such a thoughtful and creative idea,? isn'?t it\??/gi, ""],
+  // Over-narration starters
+  [/\bI see you enjoyed\b/gi, "So you watched"],
+  [/\bI see that you\b/gi, "You"],
+];
+
+function killGenericPhrases(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of AI_PHRASE_REPLACEMENTS) {
+    result = result.replace(pattern, replacement);
+  }
+  // Clean up artifacts: double spaces, leading commas/periods, etc.
+  result = result
+    .replace(/^[\s,;.]+/, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\. \./g, ".")
+    .replace(/^\s*\.\s*/, "")
+    .trim();
+  // Capitalize first letter if it got lowercased
+  if (result.length > 0 && /[a-z]/.test(result[0])) {
+    result = result[0].toUpperCase() + result.slice(1);
+  }
+  return result;
+}
+
+/* ── Humanization Layer ──────────────────────────────────── */
+
+function humanizeReply(text: string, emotion: string): string {
+  let result = text;
+
+  // For heavy emotions, simplify language further
+  const heavyEmotions = ["sad", "angry", "anxious", "concerned", "empathetic"];
+  if (heavyEmotions.includes(emotion)) {
+    // Replace formal connectors with casual ones
+    result = result
+      .replace(/\bHowever,?\b/gi, "But")
+      .replace(/\bFurthermore,?\b/gi, "And")
+      .replace(/\bAdditionally,?\b/gi, "Also")
+      .replace(/\bNevertheless,?\b/gi, "Still")
+      .replace(/\bIn addition,?\b/gi, "And")
+      .replace(/\bIt is worth noting that\b/gi, "")
+      .replace(/\bConsequently,?\b/gi, "So");
+  }
+
+  // Remove "I understand" / "I get that" if used as sentence starters (sounds robotic)
+  result = result.replace(/^(I understand\.?\s*|I get that\.?\s*)/i, "");
+
+  return result.trim();
+}
+
+function compressAndCleanReply(reply: string, detectedEmotion?: string): string {
+  // 0. Remove leaked instruction prefixes
+  let text = reply.replace(/^(REACT|REFLECT|ASK|SIT WITH IT):\s*/i, "");
+
+  // 1. Kill generic AI phrases
+  text = killGenericPhrases(text);
+
+  // 2. Humanize based on emotional context
+  text = humanizeReply(text, detectedEmotion || "neutral");
+
+  // 3. Remove [pause] spam (keep at most one)
   let pauseCount = 0;
   text = text.replace(/\[pause\]/gi, (match) => {
     pauseCount++;
     return pauseCount === 1 ? match : "";
   });
 
-  // 2. Interrogation fix: Multiple question marks? Keep up to the first one.
+  // 4. Interrogation fix: Multiple question marks? Keep up to the first one.
   const questions = text.split("?");
   if (questions.length > 2) {
-    // Keep the core sentence and the first question block, discard the rest.
     text = questions[0] + "?" + questions[1].replace(/(\.|\!|)$/, ".");
   }
 
-  // 3. Length Trimmer: Limit to ~230 chars safely by dropping whole sentences.
+  // 5. Length Trimmer: Limit to ~230 chars safely by dropping whole sentences.
   if (text.length > 250) {
     const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
     let compressed = "";
     for (const chunk of sentences) {
       if (compressed.length + chunk.length > 230 && compressed.length > 50) {
-        break; // Stop adding sentences if we're stretching too long
+        break;
       }
       compressed += chunk;
     }
-    text = compressed.trim() || text.slice(0, 200) + "..."; // Fallback
+    text = compressed.trim() || text.slice(0, 200) + "...";
   }
 
   // Final cleanup of double spaces from deletions
@@ -233,6 +343,23 @@ function isRetryableGeminiError(errorMessage: string): boolean {
     value.includes("timeout") ||
     value.includes("unavailable")
   );
+}
+
+function isLowSignalInput(text: string, emotionSignal: EmotionSignal): boolean {
+  const lowSignalRegex = /^(?:\s*([.?!]+|ah+|hm+|uh+|oh+|ok+|okay+|yes|no|maybe|hmm+|ahh+|...)\s*)$/i;
+  
+  // Length Rule: If it's less than 6 chars, it's highly likely to be low-signal
+  const isShortMatch = text.length < 6 || lowSignalRegex.test(text);
+  
+  // Intent Override: If it has a meaningful emotion (sad, angry, anxious, nostalgic, etc. - basically anything other than neutral)
+  // then it is NOT low signal, even if it's short.
+  const hasMeaningfulEmotion = emotionSignal.label !== "neutral" && emotionSignal.confidence > 0.5;
+
+  if (isShortMatch && !hasMeaningfulEmotion) {
+    return true;
+  }
+  
+  return false;
 }
 
 function inferEmotionSignalFromText(text: string): EmotionSignal {
@@ -547,13 +674,15 @@ function formatMemoryAsNaturalLanguage(memory: MemoryRecord): string {
   return `${rawKey}: ${value}`;
 }
 
-function buildSmartMemoryContext(memories: MemoryRecord[]): string {
+function buildSmartMemoryContext(memories: MemoryRecord[], arcPhase: string): string {
   if (memories.length === 0) {
     return "No stable user memory facts available yet.";
   }
 
+  const threshold = arcPhase === "deep" ? 0.75 : MEMORY_RELEVANCE_THRESHOLD;
+
   const filtered = memories.filter(
-    (m) => (m.relevanceScore ?? 0) >= MEMORY_RELEVANCE_THRESHOLD || (m.importance ?? 0) >= 4,
+    (m) => (m.relevanceScore ?? 0) >= threshold || (m.importance ?? 0) >= 6, // Keep CORE items (importance > 5)
   );
 
   if (filtered.length === 0) {
@@ -619,8 +748,12 @@ function buildMemoryHook(
   memories: MemoryRecord[],
   userEmotion: string,
   recentHistory: Array<Record<string, unknown>>,
+  arcPhase: string,
+  isLowSignal: boolean
 ): string {
-  // Don't inject hooks during emotional distress — let them vent
+  // Don't inject hooks during emotional distress, deep stages, or low signal moments
+  if (["sad", "angry", "anxious"].includes(userEmotion)) return "";
+  if (arcPhase === "deep" || isLowSignal) return "";
   if (["sad", "angry", "anxious"].includes(userEmotion)) return "";
 
   // Check if EVA already asked a question in the last reply — prevent question spam
@@ -892,22 +1025,47 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     let user = await User.findOne({ userId });
     if (!user) {
-      user = await User.create({ userId, name: userId, personalityProfile: { verbosity: 0.5, curiosityLevel: 0.5, emotionalDepth: 0.5, humorLevel: 0.2 } });
+      user = await User.create({ userId, name: userId, personalityProfile: DEFAULT_TRAITS });
     }
 
-    const userEmotionSignal = inferEmotionSignalFromText(message);
+    let userEmotionSignal = inferEmotionSignalFromText(message);
+    const isLowSignal = isLowSignalInput(message, userEmotionSignal);
+
+    if (isLowSignal) {
+      const lastUserMsg = await Message.findOne({ userId, role: "user" }).sort({ timestamp: -1 }).lean();
+      if (lastUserMsg && lastUserMsg.emotion && lastUserMsg.emotion !== "neutral") {
+        userEmotionSignal = {
+          label: lastUserMsg.emotion as string,
+          confidence: 0.8,
+          source: "inherited"
+        };
+      }
+    }
+
     const toneStrategy = getToneStrategy(userEmotionSignal.label);
 
-    // Update active personality profile based on message
-    const profile = user.personalityProfile ?? { verbosity: 0.5, curiosityLevel: 0.5, emotionalDepth: 0.5, humorLevel: 0.2 };
-    if (message.length < 20) {
-      profile.verbosity = Math.max(0.0, profile.verbosity - 0.05);
-      profile.curiosityLevel = Math.max(0.0, profile.curiosityLevel - 0.05);
-    } else if (message.length > 80 || ["sad", "angry", "anxious", "excited"].includes(userEmotionSignal.label)) {
-      profile.emotionalDepth = Math.min(1.0, profile.emotionalDepth + 0.05);
-      profile.verbosity = Math.min(1.0, profile.verbosity + 0.05);
-    }
-    await User.updateOne({ userId }, { personalityProfile: profile });
+    // Personality adaptation via engine
+    const currentTraits: PersonalityTraits = {
+      warmth: user.personalityProfile?.warmth ?? DEFAULT_TRAITS.warmth,
+      directness: user.personalityProfile?.directness ?? DEFAULT_TRAITS.directness,
+      playfulness: user.personalityProfile?.playfulness ?? DEFAULT_TRAITS.playfulness,
+      curiosity: user.personalityProfile?.curiosity ?? DEFAULT_TRAITS.curiosity,
+      depth: user.personalityProfile?.depth ?? DEFAULT_TRAITS.depth,
+    };
+    const adaptedTraits = adaptTraits(currentTraits, {
+      messageLengthShort: message.length < 20,
+      messageLengthLong: message.length > 80,
+      userEmotion: userEmotionSignal.label,
+      userUsedHumor: detectHumor(message),
+      userAskedQuestion: message.includes("?"),
+    });
+    await User.updateOne({ userId }, { personalityProfile: adaptedTraits });
+
+    // Mood carryover update
+    await updateMood(userId, userEmotionSignal.label, userEmotionSignal.confidence);
+
+    // Memory hygiene (throttled: max once per 6h)
+    await runMemoryHygiene(userId);
 
     // ── 2. Save user message to DB ──
     await Message.create({
@@ -953,6 +1111,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               importance: fact.importance + dynamicBoost,
               source: fact.source,
               type: memoryType,
+              memoryTier: classifyMemoryTier(fact.key, fact.value),
               lastAccessed: new Date(),
             },
           },
@@ -1008,7 +1167,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // ── 3b. Retrieve and rank memory facts by request relevance ──
-    const memoryCandidates = (await Memory.find({ userId })
+    const memoryCandidates = (await Memory.find({ userId, deletedAt: null })
       .sort({ importance: -1, lastAccessed: -1 })
       .limit(MEMORY_CANDIDATE_LIMIT)
       .lean()) as MemoryRecord[];
@@ -1024,7 +1183,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // ── 3c. Find triggered memories (topic-keyword overlap with current message) ──
     const triggeredMemories = findTriggeredMemories(memories, message);
-    const triggeredPrompt = buildTriggeredMemoryPrompt(triggeredMemories);
+
 
     // ── 3d. Retrieve conversation summary for long-term context ──
     const summaryMemory = memoryCandidates.find((m) => String(m.key) === "conversation_summary");
@@ -1051,35 +1210,45 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const memoryContext = buildSmartMemoryContext(memories as MemoryRecord[]);
+    // Session arc + momentum via engines
+    const lastMsgTimestamp = chronological.length > 0
+      ? new Date((chronological[chronological.length - 1] as Record<string, unknown>).timestamp as string)
+      : null;
+    const isEmotionalTopic = ["sad", "angry", "anxious"].includes(userEmotionSignal.label);
+    const arcPhase = getSessionArc(chronological.length, lastMsgTimestamp, isEmotionalTopic);
+    const recentEmotions = chronological.slice(-5).map(m => getStoredEmotion(m as Record<string, unknown>) || "neutral");
+    const { momentum, score: momentumScore } = getEmotionalMomentum(recentEmotions);
+
+    const memoryContext = buildSmartMemoryContext(memories as MemoryRecord[], arcPhase);
+    
+    // Clear triggered memories on low signal to avoid topic jumps
+    if (isLowSignal) {
+      triggeredMemories.length = 0;
+    }
+    const triggeredPrompt = buildTriggeredMemoryPrompt(triggeredMemories);
+
     const continuityGuardrail = buildContextGuardrail(
       contextDebug.historyCount,
       contextDebug.memoryUsed,
       triggeredMemories.length,
     );
-    const toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: ${toneStrategy.name}\n- Instruction: ${toneStrategy.instruction}`;
-    const memoryHook = buildMemoryHook(memories, userEmotionSignal.label, chronological as Array<Record<string, unknown>>);
+
+    let toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: ${toneStrategy.name}\n- Instruction: ${toneStrategy.instruction}`;
     
-    // Calculate arc and momentum scoring
-    const arc = contextDebug.historyCount < 4 ? "start" : contextDebug.historyCount < 10 ? "building" : contextDebug.historyCount < 20 ? "deep" : "cooldown";
-    const recentEmotions = chronological.slice(-5).map(m => getStoredEmotion(m as Record<string, unknown>) || "neutral");
-    const emotionValues: Record<string, number> = { sad: -1, angry: -1, anxious: -1, excited: 1, happy: 1, neutral: 0, curious: 0.5 };
-    const momentumScore = recentEmotions.reduce((acc, e) => acc + (emotionValues[e] || 0), 0) / (recentEmotions.length || 1);
-    const momentum = momentumScore < -0.4 ? "low" : momentumScore > 0.4 ? "high" : "stable";
+    if (isLowSignal && isEmotionalTopic) {
+      toneStrategyPrompt = `Tone strategy for this reply:\n- Strategy: Low Signal Emotional\n- Instruction: User gave a quiet response like "Ahh" or "Hmm". DO NOT change the subject. Just sit with them. Say something very short like "I know...", "Take your time.", or "Yeah..."`;
+    }
 
-    const arcPrompt = `\nConversation Arc: ${arc.toUpperCase()} Phase.
-- When "start": Keep it warmer and onboarding-focused.
-- When "building": Explore context naturally.
-- When "deep": Heavy reflection, give them space.
-- When "cooldown": Lighter, winding down tone.
-Current emotional momentum: ${momentum.toUpperCase()}.
-${momentum === "low" ? "- User momentum is low. Avoid forced brightness or playful tone." : momentum === "high" ? "- User momentum is high. Allow curiosity and lightness." : "- User momentum is stable."}
-Personality Adaptation: 
-- Verbosity scale: ${Math.round(profile.verbosity * 100)}%
-- Depth scale: ${Math.round(profile.emotionalDepth * 100)}%
-(Adjust response length and curiosity accordingly).`;
+    const memoryHook = buildMemoryHook(memories, userEmotionSignal.label, chronological as Array<Record<string, unknown>>, arcPhase, isLowSignal);
+    
+    // Mood carryover context
+    const moodContext = await getMoodContext(userId);
+    const arcPrompt = buildArcPrompt(arcPhase, momentum, moodContext.promptText);
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}`;
+    // Personality prompt
+    const personalityPrompt = buildPersonalityPrompt(adaptedTraits);
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}`;
 
     logger.info("Chat request received", {
       userId,
@@ -1299,7 +1468,7 @@ Personality Adaptation:
 
     // ── 6. Parse emotion tag & Compress ──
     const parsedEmotion = parseEmotion(rawReply);
-    const reply = compressAndCleanReply(parsedEmotion.clean);
+    const reply = compressAndCleanReply(parsedEmotion.clean, userEmotionSignal.label);
     const assistantEmotionSignal: EmotionSignal = parsedEmotion.hasTag
       ? {
         label: parsedEmotion.emotion,

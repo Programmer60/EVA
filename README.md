@@ -95,6 +95,25 @@ Template for future entries:
 	- Hooked a State Machine into `ChatPanel` for interruption handling (instantly flushes streaming text if user begins typing, never talking over them).
 	- Upgraded global UI with animated bouncing dots for the "thinking" phase, replacing static text.
 	- Fixed page-level auto-scroll bug by scoping auto-scroll purely to the chat history container.
+- Completed Personality Engine (Personality DNA):
+	- 5-trait system: warmth, directness, playfulness, curiosity, depth — preset defaults with slow adaptive nudging (±0.02 per interaction).
+	- `buildPersonalityPrompt()` translates trait weights into consistent behavioral instructions injected into the system prompt.
+	- Migrated User model from 4 vague traits (verbosity/curiosityLevel/emotionalDepth/humorLevel) to the 5 new semantically meaningful traits.
+- Completed Mood Carryover (Emotional State Persistence):
+	- Emotion-specific decay rates: sadness lingers ~7h (0.9^hours), happiness fades in ~2h (0.7^hours), anger ~2.5h (0.75^hours).
+	- Mood drift via weighted blending — single "happy" message after hours of sadness won't instantly flip the mood.
+	- Mood shift detection — when mood transitions significantly, EVA can acknowledge it (e.g., "You sound a bit lighter today.").
+	- New `MoodState` Mongoose model with rolling history of last 10 mood readings.
+- Completed Memory Cleanup (Tiered Memory Hygiene):
+	- 4-tier classification: CORE (never delete) → PREFERENCE (rarely delete) → CONTEXT (prune after 30d) → NOISE (delete immediately).
+	- Importance decay for unused memories (0.03/day, 3x faster for NOISE).
+	- Deduplication via token overlap (>80% similarity within same key prefix).
+	- Reinforcement: reused memories get +0.5 importance boost.
+	- Soft-delete via `deletedAt` field for recoverability. Active memories filtered with `deletedAt: null`.
+- Completed Conversation Arc Engine (Session-Aware Phases):
+	- 5 session phases: greeting → warmup → engaged → deep → winding_down, with 2h session gap detection.
+	- Exponentially weighted emotional momentum (recent emotions count 3x more than older ones).
+	- Unified `buildArcPrompt()` combines session phase + momentum + mood carryover into one coherent instruction block.
 
 ## Current Status (April 2026)
 
