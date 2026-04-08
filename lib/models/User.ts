@@ -15,6 +15,16 @@ const userSchema = new mongoose.Schema({
     curiosity: { type: Number, default: 0.5 },
     depth: { type: Number, default: 0.5 },
   },
+  topicInterests: {
+    type: Map,
+    of: new mongoose.Schema({
+      baseConfidence: Number,
+      recentInterest: Number,
+      lastUsed: Date,
+      frequency: Number,
+    }, { _id: false }),
+    default: {}
+  }
 });
 
 export default mongoose.models.User || mongoose.model("User", userSchema);

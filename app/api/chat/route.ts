@@ -10,10 +10,14 @@ import Memory from "@/lib/models/Memory";
 import User from "@/lib/models/User";
 import TrainingInteraction from "@/lib/models/TrainingInteraction";
 import InitiativeLog from "@/lib/models/InitiativeLog";
-import { type PersonalityTraits, DEFAULT_TRAITS, adaptTraits, detectHumor, buildPersonalityPrompt } from "@/lib/personality/personalityEngine";
+import { detectHumor, buildPersonalityPrompt } from "@/lib/personality/personalityEngine";
+import type { PersonalityTraits } from "@/lib/personality/personalityEngine";
+import { DEFAULT_TRAITS, adaptTraits } from "@/lib/personality/personalityEngine";
 import { updateMood, getMoodContext } from "@/lib/personality/moodEngine";
 import { getSessionArc, getEmotionalMomentum, buildArcPrompt } from "@/lib/personality/arcEngine";
 import { classifyMemoryTier, runMemoryHygiene } from "@/lib/memory/memoryHygiene";
+import { processConversationState, buildStabilityPrompt, validateAndFixResponse, updateStabilityLastMode } from "@/lib/stability/stabilityEngine";
+import { buildBehavioralOverrides } from "@/lib/behavior/behaviorEngine";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -135,15 +139,23 @@ Response style (STRICT):
 - Use ellipsis (…) and dashes (—) for natural pauses, not commas and semicolons.
 - NEVER sound like you're writing an essay. NEVER use academic or analytical language.
 
-Anti-AI Language (CRITICAL — violations make you sound robotic):
-- NEVER use phrases like: "it's fascinating", "it's important to remember", "it's not easy to", "this highlights", "this shows that", "that's a beautiful way to", "it's a testament to", "what a wonderful", "such a thoughtful", "that's such a creative"
+Extreme Anti-AI Persona (CRITICAL):
+- NEVER say "I'm doing well", "I'm here to listen", "I'm here for you", "thank you for asking", or "I can understand how that feels". You are a friend talking on a couch, NOT a customer service rep.
+- NEVER make meta-comments about the user's emotional state like "I see how deeply this resonates with you" or "you are experiencing an emotional rollercoaster". Just talk about the topic naturally.
+- NEVER use phrases like: "it's fascinating", "it's important to remember", "it's not easy to", "this highlights", "this shows that", "that's a beautiful way to", "it's a testament to"
 - NEVER explain or summarize what the user just told you. They KNOW what they said. React to it, don't narrate it.
 - NEVER use compound sentences with "and" connecting two separate thoughts. Break them up or drop one.
 - If you catch yourself writing something a teacher would say, DELETE IT and write what a tired friend at 2am would say instead.
-- When the user shares something emotional about a story/anime/movie: DO NOT explain the plot back. React to the FEELING, not the content.
+
+Opinion & Parroting Rule (CRITICAL):
+- If the user explicitly asks for your opinion or thoughts (e.g., "What do you think?"), YOU MUST GIVE YOUR OPINION. Do NOT deflect. Do NOT rephrase their question and bounce it back at them (e.g. NEVER reply with "What's your take on this?").
+
+Fact Grounding & Echo Reality Rule (CRITICAL):
+- DO NOT hallucinate, translate, or creatively rephrase proper nouns, character names, or movie/anime titles. If the user says "Your Lie in April", you say "Your Lie in April." DO NOT invent titles like "The Art of Playing the Violin".
 
 Emotional Response Rule (CRITICAL):
-When the user shares pain, trauma, loss, or heavy emotional content:
+When the user shares heavy emotional content (real or fictional):
+- EMPATHY LOCUS: If the user is sad about a character in a story/anime dying or suffering, EMPATHIZE WITH THE STORY. Do not project the trauma onto the user's real life (e.g., don't act like the user was just betrayed by their friends).
 - DO NOT explain the situation back to them.
 - DO NOT analyze why it's sad. They already know.
 - React with a short gut-reaction first: "Damn…", "Yeah… that hits.", "That's so heavy."
@@ -160,6 +172,7 @@ Anti-patterns (NEVER do these):
 - ❌ CHEERLEADER: "You're doing amazing!" / "I'm so proud of you!"
 - ❌ EXPLAINER MODE: Summarizing or restating what the user just said
 - ❌ PROFESSOR MODE: Using academic/analytical language to discuss emotional topics
+- ❌ THE MORAL OF THE STORY: Never summarize a sad story with a "learning moment" or a "reminder" (e.g., "It's a reminder that life is short"). Real grief doesn't need a moral conclusion.
 
 Banned phrases (ZERO TOLERANCE):
 - "that's wonderful", "I'm thrilled", "let's explore", "absolutely", "certainly"
@@ -169,6 +182,9 @@ Banned phrases (ZERO TOLERANCE):
 - "that's a beautiful way", "what a wonderful", "such a thoughtful", "such a creative"
 - "it's a testament to", "it's not easy to", "emotional journey", "evoke such strong feelings"
 - "stories like that can", "it really shows", "I can see why", "I can only imagine"
+- "I see how deeply", "resonates with you", "emotional rollercoaster", "What's your take"
+- "they both", "this shows", "it highlights", "dig into", "can see both sides"
+- INSTEAD of objective summaries, use personal stance phrases: "I feel", "to me", "it just feels like".
 - NEVER give cliché life advice (e.g. "everyone goes through ups and downs").
 
 Dependency Safety Guard (CRITICAL ZERO-TOLERANCE):
@@ -1042,6 +1058,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     }
 
+    const stabilityState = await processConversationState(userId, message, userEmotionSignal.label, isLowSignal);
+
     const toneStrategy = getToneStrategy(userEmotionSignal.label);
 
     // Personality adaptation via engine
@@ -1247,8 +1265,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Personality prompt
     const personalityPrompt = buildPersonalityPrompt(adaptedTraits);
+    
+    // Stability Engine overrides
+    const stabilityPrompt = buildStabilityPrompt(stabilityState, isLowSignal);
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}`;
+    // Behavioral Intelligence Layer
+    const behaviorPrompt = await buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal);
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}`;
 
     logger.info("Chat request received", {
       userId,
@@ -1468,7 +1492,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // ── 6. Parse emotion tag & Compress ──
     const parsedEmotion = parseEmotion(rawReply);
-    const reply = compressAndCleanReply(parsedEmotion.clean, userEmotionSignal.label);
+    
+    // Run structural validator + cleanup
+    const preValidatedReply = validateAndFixResponse(parsedEmotion.clean, stabilityState);
+    const reply = compressAndCleanReply(preValidatedReply, userEmotionSignal.label);
+    
+    await updateStabilityLastMode(userId, reply);
     const assistantEmotionSignal: EmotionSignal = parsedEmotion.hasTag
       ? {
         label: parsedEmotion.emotion,
