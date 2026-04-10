@@ -115,6 +115,51 @@ Template for future entries:
 	- Exponentially weighted emotional momentum (recent emotions count 3x more than older ones).
 	- Unified `buildArcPrompt()` combines session phase + momentum + mood carryover into one coherent instruction block.
 
+### 2026-04-08
+
+- Completed Stability Engine and Conversation State Governor:
+	- Added `ConversationState` schema to enforce stage transitions (`START`, `BUILD`, `DEEP`, `COOLDOWN`).
+	- Prevented jarring emotional leaps and sequential questioning (`lastMode` tracking).
+- Implemented Hybrid Topic Extractor:
+	- Fast keyword heuristics for simple inputs (Tier 1).
+	- Deterministic `gemini-2.0-flash` fallback for complex narratives (Tier 2).
+	- LRU Cache (`TOPIC_CACHE`) for topic persistence and efficiency.
+- Completed Behavioral Intelligence Layer (The Personality Ego):
+	- Established a static set of foundational beliefs (`CORE_OPINIONS`) enabling EVA to disagree naturally, rather than perfectly mirroring the user.
+	- Built a Dependency Boundary system that automatically overrides romantic or over-attached phrasing with structured, warm grounding ("I'm glad you feel comfortable talking").
+- Completed Dynamic Opinion Variance Engine:
+	- Traded static opinion triggers for a living mathematical matrix per user topic: `Final Confidence = (0.7 * Base Bias) + (0.3 * Recent Interest)`.
+	- Added `topicInterests` Map on the User schema tracking exact discussion frequencies.
+	- Implemented semantic decay logic (`0.85 ^ days`) for fading interests.
+	- Integrated probabilistic Follow-Up Hooks and Hesitation phrasing ("Hmm...", "I guess") when confidence algorithms drop.
+	- Added Anti-Predictability tracker via `ConversationState.lastOpinionStyle` forcing rotating cadences between Direct, Reflective, Casual, and Emotional modes.
+
+### 2026-04-10
+
+- Completed Emotional Depth Engine:
+	- Thought Completion system: EVA now extends the user's unspoken feelings with vivid, specific scenarios rather than surface acknowledgments.
+	- Emotional Echo: mirrors the weight of what was said without copying words or analyzing.
+	- Added Emotional Depth Rule to SYSTEM_PROMPT with explicit BAD vs GOOD examples.
+- Completed Subtext Detection System:
+	- 7 heuristic patterns detecting hidden emotional undercurrents (insecurity, suppression, overwhelm, guilt, comparison, directionlessness, nostalgia).
+	- Each pattern carries targeted LLM instructions to address the feeling underneath, not just the surface words.
+- Completed Conversational Rhythm Engine:
+	- Probabilistic reply length variance: 20% short-burst (1 sentence), 15% extended reflection (3-5 sentences), 65% normal.
+	- Anti-repeat enforcement via `ConversationState.lastReplyLength` — never the same cadence twice in a row.
+- Completed Reply Mode Rotation:
+	- 5 explicit reply modes: REFLECTION, OPINION, CURIOSITY, SUGGESTION, SILENT_SUPPORT.
+	- Context-aware mode selection weighted by emotional state, subtext detection, and user questions.
+	- Anti-repeat enforcement against `lastMode` — never the same structural pattern twice.
+- Completed Generic Filler Annihilation:
+	- Post-generation regex cleanup kills "That's cool", "That's interesting", "That sounds great" and similar empty phrases.
+	- Expanded SYSTEM_PROMPT banned list with anti-filler positive instruction ("say something SPECIFIC instead").
+- Completed Conversational Mode Engine (Simulation Intelligence):
+	- 4-mode scoring system: `real`, `imagined`, `emotional`, `philosophical` — scored from text signals, not binary classification.
+	- Momentum/inertia system: previous mode gets a weighted bonus (+1 per consecutive turn, max +5), preventing flip-flopping on ambiguous inputs (fixes the "sandwich bug").
+	- Scene State Machine: when in `imagined` mode, tracks `sceneType`, `object`, and `state` (e.g. preparing → cooking → almost_ready → ready) with state-specific sensory prompts.
+	- Hard constraints: in `imagined` mode, EVA is physically forbidden from saying "I can't do that", "I don't have access", or "I'm an AI". She must stay in the scene.
+	- Exit detection: strong real-world signals (time/date queries, exam/work context) override momentum and snap back to `real` mode.
+
 ## Current Status (April 2026)
 
 Completed now:

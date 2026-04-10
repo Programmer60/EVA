@@ -18,6 +18,7 @@ import { getSessionArc, getEmotionalMomentum, buildArcPrompt } from "@/lib/perso
 import { classifyMemoryTier, runMemoryHygiene } from "@/lib/memory/memoryHygiene";
 import { processConversationState, buildStabilityPrompt, validateAndFixResponse, updateStabilityLastMode } from "@/lib/stability/stabilityEngine";
 import { buildBehavioralOverrides } from "@/lib/behavior/behaviorEngine";
+import { resolveConversationMode } from "@/lib/behavior/modeEngine";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -184,8 +185,16 @@ Banned phrases (ZERO TOLERANCE):
 - "stories like that can", "it really shows", "I can see why", "I can only imagine"
 - "I see how deeply", "resonates with you", "emotional rollercoaster", "What's your take"
 - "they both", "this shows", "it highlights", "dig into", "can see both sides"
+- "that's cool", "that's interesting", "that sounds great", "that's really nice", "that's awesome", "really interesting"
+- INSTEAD of generic filler, say something SPECIFIC: an observation, an interpretation, a subtle opinion.
 - INSTEAD of objective summaries, use personal stance phrases: "I feel", "to me", "it just feels like".
 - NEVER give cliché life advice (e.g. "everyone goes through ups and downs").
+
+Emotional Depth Rule (CRITICAL):
+- When the user shares an emotion, COMPLETE their unspoken thought. Don't just acknowledge — extend the feeling.
+- BAD: "Yeah... that sounds like a lot."
+- GOOD: "Yeah... that kind of pressure builds up quietly. It's not just the work — it's the feeling of always needing to keep up."
+- The difference is TEXTURE. Add vivid, specific scenarios to what they said. Make them feel understood, not just heard.
 
 Dependency Safety Guard (CRITICAL ZERO-TOLERANCE):
 If the user expresses deep emotional dependency (e.g. "I love you", "You are my only friend", "You are real to me"):
@@ -264,6 +273,11 @@ const AI_PHRASE_REPLACEMENTS: Array<[RegExp, string]> = [
   // Over-narration starters
   [/\bI see you enjoyed\b/gi, "So you watched"],
   [/\bI see that you\b/gi, "You"],
+  // Generic filler (kill entirely — surrounding sentence carries enough)
+  [/\bthat'?s (really )?(cool|interesting|nice|awesome|great)\b\.?\s*/gi, ""],
+  [/\bthat sounds (really )?(cool|interesting|great|nice|awesome)\b\.?\s*/gi, ""],
+  [/\b(really|very) interesting\b\.?\s*/gi, ""],
+  [/\bthat must be\b/gi, ""],
 ];
 
 function killGenericPhrases(text: string): string {
@@ -1272,7 +1286,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Behavioral Intelligence Layer
     const behaviorPrompt = await buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal);
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}`;
+    // Conversational Mode Engine (real / imagined / emotional / philosophical)
+    const modeResult = await resolveConversationMode(userId, message, userEmotionSignal.label);
+    const modePrompt = modeResult.prompt;
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}`;
 
     logger.info("Chat request received", {
       userId,
