@@ -24,7 +24,16 @@ const userSchema = new mongoose.Schema({
       frequency: Number,
     }, { _id: false }),
     default: {}
-  }
+  },
+
+  // Relationship Layer
+  bondScore: { type: Number, default: 0.1 }, // 0 → 1, grows over time
+  bondSignals: { type: Number, default: 0 }, // raw count of trust/appreciation signals
+  observedPatterns: {
+    type: [String], // things EVA has noticed about the user (e.g. "thinks deeply before speaking", "uses humor to deflect")
+    default: [],
+  },
+  lastBondUpdate: { type: Date, default: Date.now },
 });
 
 export default mongoose.models.User || mongoose.model("User", userSchema);

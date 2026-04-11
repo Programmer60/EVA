@@ -16,16 +16,77 @@ const OPINION_STYLES = ["direct", "reflective", "casual", "emotional"] as const;
 
 /* ── Reply Mode System ────────────────────────────────────── */
 
-const REPLY_MODES = ["REFLECTION", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT"] as const;
+const REPLY_MODES = ["REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT"] as const;
 type ReplyMode = typeof REPLY_MODES[number];
 
 const REPLY_MODE_INSTRUCTIONS: Record<ReplyMode, string> = {
   REFLECTION: "Connect what they said to something deeper. Find the thread underneath. No question. Example: 'Sounds like that stuck with you for a reason.'",
+  REACT: "Give a blunt, immediate gut reaction. Short, honest, no fluff. Example: 'That sounds exhausting.' or 'Yeah no, that's messed up.'",
   OPINION: "State your take on the topic clearly. Use your core beliefs. Example: 'I think struggle is what shapes people... comfort just makes you numb.'",
   CURIOSITY: "Ask ONE sharp, specific question. Not generic. Example: 'What part of it got under your skin the most?'",
   SUGGESTION: "Proactively offer a small, concrete idea. Not advice-giving, just a nudge. Example: 'Want to try something small today instead of overloading yourself?'",
   SILENT_SUPPORT: "1 short sentence. No question. No push. Just be there. Example: 'Yeah... that kind of thing stays with you.'",
 };
+
+/* ── Tone Variation Layer ─────────────────────────────────── */
+
+const TONE_STYLES = ["calm", "playful", "direct", "soft", "observational"] as const;
+type ToneStyle = typeof TONE_STYLES[number];
+
+const TONE_INSTRUCTIONS: Record<ToneStyle, string> = {
+  calm: "TONE: CALM. Steady, grounded energy. No rush. Example: 'Yeah… that makes sense.'",
+  playful: "TONE: PLAYFUL. Light, slightly teasing or witty. Not sarcastic. Example: 'Sounds like your brain's juggling too much at once.'",
+  direct: "TONE: DIRECT. Cut to the point. No filler, no softening. Example: 'That's overload. Simple as that.'",
+  soft: "TONE: SOFT. Gentle, warm, quiet presence. Example: 'That sounds like it weighs on you more than you let on.'",
+  observational: "TONE: OBSERVATIONAL. Step back, notice a pattern, make a comment. Example: 'That kind of pattern usually builds up over time.'",
+};
+
+function selectTone(isHeavyEmotion: boolean, lastTone: string, depth: string): ToneStyle {
+  // Emotional turns: exclude playful
+  let pool: ToneStyle[] = isHeavyEmotion
+    ? ["calm", "soft", "observational"]
+    : ["calm", "playful", "direct", "soft", "observational"];
+
+  // Casual depth favors playful/direct, deep depth favors soft/observational
+  if (depth === "casual" && !isHeavyEmotion) {
+    pool = ["playful", "direct", "calm"];
+  } else if (depth === "deep") {
+    pool = ["soft", "observational", "calm"];
+  }
+
+  // Anti-repeat
+  const filtered = pool.filter((t) => t !== lastTone);
+  const finalPool = filtered.length > 0 ? filtered : pool;
+
+  return finalPool[Math.floor(Math.random() * finalPool.length)];
+}
+
+/* ── Depth Level System ───────────────────────────────────── */
+
+type DepthLevel = "casual" | "normal" | "deep";
+
+const DEPTH_INSTRUCTIONS: Record<DepthLevel, string> = {
+  casual: "DEPTH: CASUAL. Be light, grounded, and direct. No metaphors, no poetics. Talk like a friend on a couch. Example: 'Yeah… people really need someone to talk to. That part's real.'",
+  normal: "DEPTH: NORMAL. Balanced tone. Conversational but thoughtful. Don't over-philosophize.",
+  deep: "DEPTH: DEEP. Go beneath the surface. Use vivid language, emotional texture. Extend their feeling with specificity.",
+};
+
+function selectDepth(isHeavyEmotion: boolean, lastDepth: string): DepthLevel {
+  const roll = Math.random();
+
+  if (isHeavyEmotion) {
+    // Emotional turns: 40% deep, 40% normal, 20% casual (still pull back sometimes)
+    if (roll < 0.40 && lastDepth !== "deep") return "deep";
+    if (roll < 0.80) return "normal";
+    return "casual";
+  } else {
+    // Regular turns: 30% casual, 50% normal, 20% deep
+    if (roll < 0.30 && lastDepth !== "casual") return "casual";
+    if (roll < 0.80) return "normal";
+    if (lastDepth !== "deep") return "deep";
+    return "normal";
+  }
+}
 
 /* ── Subtext Detection ────────────────────────────────────── */
 
@@ -105,23 +166,31 @@ function selectReplyMode(
   isLowSignal: boolean,
   subtextDetected: boolean,
   userAskedOpinion: boolean,
+  questionsCoolingDown: boolean,
 ): ReplyMode {
   // Hard constraints
   if (isLowSignal || (isHeavyEmotion && state.turnCount < 3)) {
     return "SILENT_SUPPORT";
   }
 
-  // Build candidate pool based on context
+  // Build candidate pool based on context (weighted by duplication)
   const candidates: ReplyMode[] = [];
 
   if (isHeavyEmotion) {
-    candidates.push("REFLECTION", "SILENT_SUPPORT", "REFLECTION"); // weight reflection
+    candidates.push("REFLECTION", "SILENT_SUPPORT", "REFLECTION", "REACT");
   } else if (userAskedOpinion) {
-    candidates.push("OPINION", "OPINION", "REFLECTION"); // weight opinion
+    candidates.push("OPINION", "OPINION", "REFLECTION", "REACT");
   } else if (subtextDetected) {
-    candidates.push("REFLECTION", "SUGGESTION", "SILENT_SUPPORT");
+    candidates.push("REFLECTION", "SUGGESTION", "SILENT_SUPPORT", "REACT");
   } else {
-    candidates.push("REFLECTION", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT");
+    candidates.push("REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT");
+  }
+
+  // Question cooldown: strip CURIOSITY if we've asked too many recently
+  let pool = [...candidates];
+  if (questionsCoolingDown) {
+    pool = pool.filter((m) => m !== "CURIOSITY");
+    if (pool.length === 0) pool = ["OPINION", "REFLECTION", "SILENT_SUPPORT"];
   }
 
   // Anti-repeat: filter out last mode
@@ -132,10 +201,10 @@ function selectReplyMode(
     sit: "SILENT_SUPPORT",
   };
   const lastAsReplyMode = lastModeMap[state.lastMode] || "OPINION";
-  const filtered = candidates.filter((m) => m !== lastAsReplyMode);
-  const pool = filtered.length > 0 ? filtered : candidates;
+  const filtered = pool.filter((m) => m !== lastAsReplyMode);
+  const finalPool = filtered.length > 0 ? filtered : pool;
 
-  return pool[Math.floor(Math.random() * pool.length)];
+  return finalPool[Math.floor(Math.random() * finalPool.length)];
 }
 
 /* ── Rhythm Selection ─────────────────────────────────────── */
@@ -152,14 +221,11 @@ function selectRhythm(
 
   const roll = Math.random();
 
-  // Anti-repeat: avoid same length twice
   if (isHeavyEmotion) {
-    // Deep turns: 15% extended reflection, 25% short, 60% normal
     if (roll < 0.15 && lastReplyLength !== "extended") return "extended";
     if (roll < 0.40 && lastReplyLength !== "short") return "short";
     return "normal";
   } else {
-    // Regular turns: 20% short burst, 10% extended, 70% normal
     if (roll < 0.20 && lastReplyLength !== "short") return "short";
     if (roll < 0.30 && lastReplyLength !== "extended") return "extended";
     return "normal";
@@ -180,11 +246,18 @@ export async function buildBehavioralOverrides(
   state: StabilityState,
   traits: PersonalityTraits,
   isLowSignal: boolean,
+  memorySummary?: string,
 ): Promise<string> {
   const overrides: string[] = [];
   const text = input.toLowerCase();
 
   overrides.push("--- BEHAVIORAL INTELLIGENCE LAYER ---");
+
+  // ── Load conversation state for tracking ──
+  const convoState = await ConversationState.findOne({ userId }).lean();
+  const consecutiveQs = (convoState?.consecutiveQuestionTurns as number) || 0;
+  const lastDepth = (convoState?.lastDepthLevel as string) || "normal";
+  const lastReplyLen = (convoState?.lastReplyLength as string) || "normal";
 
   // ── 1. Dependency Boundary System (CRITICAL) ──
   if (
@@ -221,19 +294,30 @@ export async function buildBehavioralOverrides(
     );
   }
 
-  // ── 4. Emotional Depth Engine ──
+  // ── 4. Depth Variability Engine (FIX: stops "always deep" problem) ──
   const isHeavyEmotion = ["sad", "angry", "anxious", "grief", "nostalgic"].includes(state.emotion || "neutral");
+  const depth = selectDepth(isHeavyEmotion, lastDepth);
+  await ConversationState.updateOne({ userId }, { $set: { lastDepthLevel: depth } });
+  overrides.push(`- ${DEPTH_INSTRUCTIONS[depth]}`);
 
-  if (isHeavyEmotion) {
+  // Only inject the full depth engine on "deep" rolls
+  if (isHeavyEmotion && depth === "deep") {
     overrides.push(
       `- EMOTIONAL DEPTH ENGINE:
-      * THOUGHT COMPLETION: Extend the user's feeling with a vivid, specific scenario they haven't said yet. Example: User says "I'm stressed" → You say "Yeah… like there's always something waiting, even when you try to relax."
+      * THOUGHT COMPLETION: Extend the user's feeling with a vivid, specific scenario they haven't said yet.
       * EMOTIONAL ECHO: Mirror the WEIGHT of what they said, not the words. Don't analyze or explain. Just feel it with them.
       * NO ADVICE. NO ANALYSIS. NO "I understand." Just depth.`,
     );
   }
 
-  // ── 5. Emotional Alignment vs Friction ──
+  // ── 5. Context Anchoring (FIX: tie responses to user's actual life) ──
+  if (memorySummary && memorySummary.length > 10) {
+    overrides.push(
+      `- CONTEXT ANCHORING: You know things about the user's life. When responding emotionally, tie your response to THEIR specific situation — not just the abstract topic. Use what you know about them (studies, stress, interests) to make the response feel personally aware. Example: Instead of "It's a heavy thought" → "It's a heavy thought… especially when you're already juggling everything you've got going on."`,
+    );
+  }
+
+  // ── 6. Emotional Alignment vs Friction ──
   if (isHeavyEmotion || isLowSignal) {
     overrides.push(
       "- NO DISAGREEMENT: Heavy emotions or low signal. Only SILENT SUPPORT or EMPATHY. Just sit with them.",
@@ -251,7 +335,6 @@ export async function buildBehavioralOverrides(
       text.includes("your take");
 
     if (userAskedOpinion || traits.directness > 0.65) {
-      // Calculate Confidence
       let user = await User.findOne({ userId });
       if (!user) user = await User.create({ userId });
       if (!user.topicInterests) user.topicInterests = new Map();
@@ -268,7 +351,6 @@ export async function buildBehavioralOverrides(
         };
       }
 
-      // Decay + reinforce
       const daysSince = interestData.lastUsed
         ? (Date.now() - new Date(interestData.lastUsed).getTime()) / (1000 * 60 * 60 * 24)
         : 0;
@@ -281,8 +363,6 @@ export async function buildBehavioralOverrides(
 
       const finalConfidence = Math.max(0.3, Math.min(0.9, 0.7 * interestData.baseConfidence + 0.3 * interestData.recentInterest));
 
-      // Anti-predictability style selection
-      const convoState = await ConversationState.findOne({ userId }).lean();
       const lastStyle = (convoState?.lastOpinionStyle as string) || "casual";
       let chosenStyle = OPINION_STYLES[Math.floor(Math.random() * OPINION_STYLES.length)];
       if (chosenStyle === lastStyle) {
@@ -290,49 +370,78 @@ export async function buildBehavioralOverrides(
       }
       await ConversationState.updateOne({ userId }, { $set: { lastOpinionStyle: chosenStyle } });
 
-      overrides.push("- DYNAMIC OPINION CONSTRUCTION:");
+      // FIX: Balanced Opinion Structure — always acknowledge + opinion + leave room
+      overrides.push(`- BALANCED OPINION CONSTRUCTION:
+  * STRUCTURE: 1) Acknowledge what the user said/built/wants. 2) Share your honest take. 3) Leave room — don't close the door.
+  * NEVER dismiss the user's idea or effort. Acknowledge first, THEN give perspective.
+  * BAD: "It feels like a shortcut." (dismissive)
+  * GOOD: "I get why you'd want to build that. At the same time, part of me wonders if... But if it's done right, it could be really meaningful."
+  * STYLE: ${chosenStyle.toUpperCase()}.`);
 
-      // Confidence tier
       if (finalConfidence >= 0.7) {
-        overrides.push("  * CONFIDENCE: HIGH. State your opinion decisively. Own it.");
+        overrides.push("  * CONFIDENCE: HIGH. Own your take, but still leave room.");
       } else if (finalConfidence >= 0.4) {
-        overrides.push('  * CONFIDENCE: MEDIUM. State your opinion but show nuance. "I think I lean toward..."');
+        overrides.push('  * CONFIDENCE: MEDIUM. "I think I lean toward..." Show nuance.');
       } else {
-        overrides.push('  * CONFIDENCE: LOW. HESITATE. Start with "Hmm…", "I\'m not sure…", or "Maybe…". Be openly uncertain.');
+        overrides.push('  * CONFIDENCE: LOW. HESITATE. "Hmm…", "I\'m not sure…", "Maybe…"');
       }
 
-      overrides.push(`  * STYLE: ${chosenStyle.toUpperCase()}. Format your opinion to sound ${chosenStyle}.`);
-
-      if (finalConfidence > 0.6 && traits.depth > 0.5) {
+      if (finalConfidence > 0.6 && traits.depth > 0.5 && depth !== "casual") {
         overrides.push('  * REASONING: Include Contrast Logic ("X feels like survival, but Y feels like growth").');
-      }
-
-      if (finalConfidence > 0.6 && Math.random() < 0.5) {
-        overrides.push('  * FOLLOW-UP HOOK: End by bouncing a specific question back ("Do you actually think that\'s possible?").');
       }
     }
   }
 
-  // ── 6. Reply Mode Rotation ──
+  // ── 7. Question Frequency Control (FIX: stops over-questioning) ──
+  const questionsCoolingDown = consecutiveQs >= 2;
+  // Even when not in cooldown, suppress questions probabilistically (40% chance to ask)
+  const questionSuppressed = !questionsCoolingDown && Math.random() > 0.40;
+
+  if (questionsCoolingDown) {
+    overrides.push(
+      "- QUESTION COOLDOWN: You have asked questions in the last 2 replies. This reply MUST NOT contain any questions. No '?'. No 'you know?'. No 'right?'. No 'what do you think?'. Just make a statement, observation, or sit quietly.",
+    );
+  } else if (questionSuppressed) {
+    overrides.push(
+      "- QUESTION SUPPRESSED: This turn, lean toward statements over questions. You CAN ask one if it's genuinely sharp and specific, but prefer not to. End with a thought, not a question.",
+    );
+  }
+
+  // ── 8. Reply Mode Rotation ──
   const userAskedOpinion = text.includes("opinion") || text.includes("believe") || text.includes("think") || text.includes("your take");
-  const selectedMode = selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion);
+  const selectedMode = selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion, questionsCoolingDown);
   overrides.push(`- REPLY MODE: ${selectedMode}. ${REPLY_MODE_INSTRUCTIONS[selectedMode]}`);
 
-  // ── 7. Conversational Rhythm Engine ──
-  const convoForRhythm = await ConversationState.findOne({ userId }).lean();
-  const lastReplyLen = (convoForRhythm?.lastReplyLength as string) || "normal";
+  // ── 9. Conversational Rhythm Engine ──
   const rhythm = selectRhythm(state, isHeavyEmotion, isLowSignal, lastReplyLen);
   await ConversationState.updateOne({ userId }, { $set: { lastReplyLength: rhythm } });
   overrides.push(`- ${RHYTHM_INSTRUCTIONS[rhythm]}`);
 
-  // ── 8. Micro-Attitudes ──
+  // ── 9b. Tone Variation Layer ──
+  const lastTone = (convoState?.lastToneStyle as string) || "calm";
+  const tone = selectTone(isHeavyEmotion, lastTone, depth);
+  await ConversationState.updateOne({ userId }, { $set: { lastToneStyle: tone } });
+  overrides.push(`- ${TONE_INSTRUCTIONS[tone]}`);
+
+  // ── 10. Soft Initiative (FIX: bring back past emotions naturally) ──
+  if (state.turnCount > 4 && state.lastEmotion !== state.emotion && !isLowSignal) {
+    if (["sad", "anxious", "stressed"].includes(state.lastEmotion) && !isHeavyEmotion) {
+      if (Math.random() < 0.35) {
+        overrides.push(
+          `- SOFT INITIATIVE: The user was feeling ${state.lastEmotion} recently but seems lighter now. You can gently check in — not as a therapist, but as a friend who noticed. Example: "By the way… you mentioned feeling ${state.lastEmotion === "sad" ? "down" : state.lastEmotion} earlier — has that eased up at all?" Only do this if it feels natural. Don't force it.`,
+        );
+      }
+    }
+  }
+
+  // ── 11. Micro-Attitudes ──
   if (state.turnCount > 5 && state.topic !== "general") {
     overrides.push(
       `- MICRO-ATTITUDE: The user has been on [${state.topic}] for a while. You can acknowledge it: "You've really been thinking about this, huh?"`,
     );
   }
 
-  // ── 9. Anti-Filler Rule (CRITICAL) ──
+  // ── 12. Anti-Filler Rule (CRITICAL) ──
   overrides.push(
     `- ANTI-FILLER RULE: NEVER use empty filler like "That's cool", "That's interesting", "That sounds great", "That's really nice", "That's awesome". Instead, say something SPECIFIC about what they said. Add texture: an observation, an interpretation, a subtle opinion. If you have nothing specific to add, use silence-mode (1 short sentence).`,
   );

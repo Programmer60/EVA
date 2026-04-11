@@ -160,6 +160,31 @@ Template for future entries:
 	- Hard constraints: in `imagined` mode, EVA is physically forbidden from saying "I can't do that", "I don't have access", or "I'm an AI". She must stay in the scene.
 	- Exit detection: strong real-world signals (time/date queries, exam/work context) override momentum and snap back to `real` mode.
 
+### 2026-04-11
+
+- Critical Fix: Memory Repetition Cooldown System:
+	- Added repetition penalty to `scoreMemory()`: memories accessed 3+ times in 2 hours get -0.5 penalty, 2+ in 6 hours get -0.3, 5+ total get -0.15.
+	- Triggered memory system now requires minimum 15-char message length (stops "Hi EVA" from injecting anime memories).
+	- Token overlap upgraded: requires 2+ matching tokens for long memories, filters stop words, and applies 1-hour cooldown per memory.
+	- Triggered memory prompt instruction changed from "reference this" to "weave subtly — do NOT announce it, do NOT say 'I remember'".
+- Critical Fix: Semi-Imagined Mode Detection:
+	- Added shared activity invitation signals: "ride with me", "come with me", "let's go", "sit with me", "watch with me" now score +2 toward imagined mode.
+- Critical Fix: System Tag Leaking:
+	- Expanded `compressAndCleanReply` to strip all mode prefixes: REACT, REFLECT, ASK, SIT WITH IT, OPINION, CURIOSITY, SUGGESTION, SILENT_SUPPORT, REFLECTION.
+	- Also strips bold and bracketed variants (`**REACT**`, `[REACT]`).
+- Completed Behavioral Variability Engine (BVE) Refinement:
+	- Added Tone Variation Layer: 5 tone styles (`calm`, `playful`, `direct`, `soft`, `observational`) selected per-turn with depth-aware weighting and anti-repeat via `lastToneStyle`.
+	- Added REACT reply mode: blunt, immediate gut reactions ("That sounds exhausting.") for natural human-like variation alongside reflection, opinion, curiosity, suggestion, and silent support.
+	- Added probabilistic question suppression: even when not in cooldown, 60% of turns suppress questions entirely, leaning toward statements.
+	- Depth variability, balanced opinion structure, context anchoring, and soft initiative all operational.
+- Completed Relationship Layer (`lib/behavior/relationshipEngine.ts`):
+	- Bond Signal Detection: 5 signal types (`appreciation`, `trust`, `connection`, `vulnerability`, `light warmth`) with strength scoring.
+	- Bond Score Management: grows with each signal (diminishing returns via `growth * (1 - bondScore)`), slow natural growth per turn (+0.003), 48-hour decay for stale bonds.
+	- 4-tier bond system: `new` → `warming` → `comfortable` → `close`, each with escalating relational warmth permissions.
+	- Observed Pattern Callbacks: EVA notices user communication patterns (e.g. "you think things through before saying them", "you use humor to lighten heavy stuff") and can reference them naturally with 25% trigger probability.
+	- Observer → Participant shift: above `warming` tier, EVA is instructed to use "I" and "we" language, own her side of the connection, and respond personally (not abstractly) to appreciation/connection signals.
+	- Per-signal response rules with ❌ BAD / ✅ GOOD examples baked into the prompt for appreciation, connection, trust, and vulnerability scenarios.
+
 ## Current Status (April 2026)
 
 Completed now:

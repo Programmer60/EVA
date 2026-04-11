@@ -19,6 +19,7 @@ import { classifyMemoryTier, runMemoryHygiene } from "@/lib/memory/memoryHygiene
 import { processConversationState, buildStabilityPrompt, validateAndFixResponse, updateStabilityLastMode } from "@/lib/stability/stabilityEngine";
 import { buildBehavioralOverrides } from "@/lib/behavior/behaviorEngine";
 import { resolveConversationMode } from "@/lib/behavior/modeEngine";
+import { buildRelationshipPrompt } from "@/lib/behavior/relationshipEngine";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -325,8 +326,12 @@ function humanizeReply(text: string, emotion: string): string {
 }
 
 function compressAndCleanReply(reply: string, detectedEmotion?: string): string {
-  // 0. Remove leaked instruction prefixes
-  let text = reply.replace(/^(REACT|REFLECT|ASK|SIT WITH IT):\s*/i, "");
+  // 0. Remove leaked instruction prefixes (mode tags, system labels)
+  let text = reply
+    .replace(/^(REACT|REFLECT|ASK|SIT WITH IT|OPINION|CURIOSITY|SUGGESTION|SILENT_SUPPORT|REFLECTION|THOUGHT|RESPONSE|MESSAGE|NOTE)[:\s\-–—]*/i, "")
+    .replace(/^\*\*(REACT|REFLECT|ASK|SIT WITH IT|OPINION|CURIOSITY|SUGGESTION|SILENT_SUPPORT|REFLECTION|THOUGHT|RESPONSE|MESSAGE|NOTE)\*\*[:\s\-–—]*/i, "")
+    .replace(/^\[(REACT|REFLECT|ASK|SIT WITH IT|OPINION|CURIOSITY|SUGGESTION|SILENT_SUPPORT|REFLECTION|THOUGHT|RESPONSE|MESSAGE|NOTE)\][:\s\-–—]*/i, "")
+    .trim();
 
   // 1. Kill generic AI phrases
   text = killGenericPhrases(text);
@@ -751,15 +756,31 @@ function buildSmartMemoryContext(memories: MemoryRecord[], arcPhase: string): st
 }
 
 function findTriggeredMemories(memories: MemoryRecord[], message: string): MemoryRecord[] {
+  // Gate: don't trigger memories on greetings or very short messages
+  if (message.length < 15) return [];
+  
   const messageTokens = new Set(tokenizeText(message));
+  // Filter out ultra-common stop words that cause false triggers
+  const stopWords = new Set(["the", "a", "an", "is", "it", "and", "or", "but", "to", "of", "in", "for", "on", "my", "i", "so", "too", "hi", "hey", "hello", "good", "how", "are", "you", "what", "do", "did", "was", "have", "has", "be", "not", "with", "this", "that"]);
+  const filteredTokens = new Set([...messageTokens].filter(t => !stopWords.has(t)));
+  
+  if (filteredTokens.size === 0) return [];
+
   const triggered: MemoryRecord[] = [];
 
   for (const memory of memories) {
     const value = String(memory.value ?? "");
     const valueTokens = tokenizeText(value);
-    const hasOverlap = valueTokens.some((token) => messageTokens.has(token));
+    // Require at least 2 token overlap for longer values, 1 for short
+    const overlapCount = valueTokens.filter((token) => filteredTokens.has(token)).length;
+    const minOverlap = valueTokens.length > 3 ? 2 : 1;
+    
+    // Also check: don't re-trigger memories accessed very recently
+    const lastAccessed = memory.lastAccessed ? new Date(memory.lastAccessed as string).getTime() : 0;
+    const hoursSince = lastAccessed ? (Date.now() - lastAccessed) / (1000 * 60 * 60) : 999;
+    if (hoursSince < 1) continue; // cooldown: skip if used in last hour
 
-    if (hasOverlap) {
+    if (overlapCount >= minOverlap) {
       triggered.push(memory);
     }
   }
@@ -771,7 +792,7 @@ function buildTriggeredMemoryPrompt(triggered: MemoryRecord[]): string {
   if (triggered.length === 0) return "";
 
   const lines = triggered.map((m) => `- ${formatMemoryAsNaturalLanguage(m)}`);
-  return `\nDirectly relevant memory (reference this naturally in your reply):\n${lines.join("\n")}`;
+  return `\nDirectly relevant memory (weave this in subtly and naturally — do NOT announce it, do NOT say "I remember". Just let it inform your response):\n${lines.join("\n")}`;
 }
 
 function buildMemoryHook(
@@ -919,11 +940,27 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   const importance = computeImportanceScore(memory);
   const frequency = computeFrequencyScore(memory);
 
-  return (
+  // Repetition penalty: penalize memories that have been accessed too often recently
+  let repetitionPenalty = 0;
+  const accessCount = (memory.accessCount as number) ?? 0;
+  const lastAccessed = memory.lastAccessed ? new Date(memory.lastAccessed as string).getTime() : 0;
+  const hoursSinceAccess = lastAccessed ? (Date.now() - lastAccessed) / (1000 * 60 * 60) : 999;
+
+  // Hard block: if accessed in last 2 hours AND accessed 3+ times, heavy penalty
+  if (hoursSinceAccess < 2 && accessCount >= 3) {
+    repetitionPenalty = 0.5;
+  } else if (hoursSinceAccess < 6 && accessCount >= 2) {
+    repetitionPenalty = 0.3;
+  } else if (accessCount >= 5) {
+    repetitionPenalty = 0.15; // general overuse penalty
+  }
+
+  return Math.max(0, 
     0.5 * relevance +
     0.2 * recency +
     0.2 * importance +
-    0.1 * frequency
+    0.1 * frequency -
+    repetitionPenalty
   );
 }
 
@@ -1284,13 +1321,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const stabilityPrompt = buildStabilityPrompt(stabilityState, isLowSignal);
 
     // Behavioral Intelligence Layer
-    const behaviorPrompt = await buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal);
+    const behaviorPrompt = await buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal, memoryContext);
 
     // Conversational Mode Engine (real / imagined / emotional / philosophical)
     const modeResult = await resolveConversationMode(userId, message, userEmotionSignal.label);
     const modePrompt = modeResult.prompt;
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}`;
+    // Relationship Layer (bond tracking, relational grounding)
+    const { bondPrompt } = await buildRelationshipPrompt(userId, message, stabilityState.turnCount);
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}\n\n${bondPrompt}`;
 
     logger.info("Chat request received", {
       userId,
@@ -1312,48 +1352,48 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ],
     }));
 
-    // ── 5. Call provider: Gemini primary, OpenRouter fallback ──
+    // ── 5. Call provider: OpenRouter only (Gemini commented out) ──
     let rawReply: string | undefined;
     let providerUsed: "gemini" | "openrouter" | null = null;
 
-    if (env.geminiApiKey) {
-      const client = new GoogleGenAI({ apiKey: env.geminiApiKey });
+    // --- Gemini primary (DISABLED) ---
+    // if (env.geminiApiKey) {
+    //   const client = new GoogleGenAI({ apiKey: env.geminiApiKey });
+    //
+    //   try {
+    //     const response = await client.models.generateContent({
+    //       model: env.geminiModel,
+    //       contents: geminiHistory,
+    //       config: {
+    //         systemInstruction: dynamicSystemPrompt,
+    //         maxOutputTokens: 150,
+    //         temperature: 0.7,
+    //       },
+    //     });
+    //
+    //     rawReply = response.text?.trim();
+    //     providerUsed = "gemini";
+    //   } catch (modelError) {
+    //     const message =
+    //       modelError instanceof Error ? modelError.message : "Unknown Gemini error";
+    //     logger.error("Gemini request failed", { message });
+    //
+    //     if (!env.openRouterApiKey) {
+    //       throw new AppError(
+    //         "Gemini request failed and OPENROUTER_API_KEY is not configured.",
+    //         502,
+    //       );
+    //     }
+    //
+    //     if (!isRetryableGeminiError(message)) {
+    //       logger.info("Gemini failed with non-retryable error; trying OpenRouter fallback", {
+    //         reason: message,
+    //       });
+    //     }
+    //   }
+    // }
 
-      try {
-        const response = await client.models.generateContent({
-          model: env.geminiModel,
-          contents: geminiHistory,
-          config: {
-            systemInstruction: dynamicSystemPrompt,
-            maxOutputTokens: 150,
-            temperature: 0.7,
-          },
-        });
-
-        rawReply = response.text?.trim();
-        providerUsed = "gemini";
-      } catch (modelError) {
-        const message =
-          modelError instanceof Error ? modelError.message : "Unknown Gemini error";
-
-        logger.error("Gemini request failed", { message });
-
-        if (!env.openRouterApiKey) {
-          throw new AppError(
-            "Gemini request failed and OPENROUTER_API_KEY is not configured.",
-            502,
-          );
-        }
-
-        if (!isRetryableGeminiError(message)) {
-          logger.info("Gemini failed with non-retryable error; trying OpenRouter fallback", {
-            reason: message,
-          });
-        }
-      }
-    }
-
-    if (!rawReply && env.openRouterApiKey) {
+    if (env.openRouterApiKey) {
       const openRouterClient = new OpenAI({
         apiKey: env.openRouterApiKey,
         baseURL: "https://openrouter.ai/api/v1",

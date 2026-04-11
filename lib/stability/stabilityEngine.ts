@@ -140,7 +140,9 @@ export function validateAndFixResponse(reply: string, state: StabilityState): st
  */
 export async function updateStabilityLastMode(userId: string, reply: string) {
   let finalMode = "reaction";
-  if (reply.includes("?")) {
+  const hasQuestion = reply.includes("?");
+
+  if (hasQuestion) {
     finalMode = "question";
   } else if (reply.length < 20) {
     finalMode = "sit";
@@ -148,5 +150,16 @@ export async function updateStabilityLastMode(userId: string, reply: string) {
     finalMode = "reflection";
   }
 
-  await ConversationState.updateOne({ userId }, { $set: { lastMode: finalMode } });
+  // Track consecutive question turns for cooldown enforcement
+  if (hasQuestion) {
+    await ConversationState.updateOne(
+      { userId },
+      { $set: { lastMode: finalMode }, $inc: { consecutiveQuestionTurns: 1 } },
+    );
+  } else {
+    await ConversationState.updateOne(
+      { userId },
+      { $set: { lastMode: finalMode, consecutiveQuestionTurns: 0 } },
+    );
+  }
 }

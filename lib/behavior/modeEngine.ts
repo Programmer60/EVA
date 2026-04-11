@@ -56,6 +56,11 @@ function scoreImagined(text: string): number {
     score += 3;
   }
 
+  // Shared activity invitations (semi-imagined — user inviting EVA to do something together)
+  if (/\b(come with me|ride with me|go with me|let'?s go|we should|join me|sit with me|walk with me|stay with me|hang out|watch with me|listen with me)\b/.test(t)) {
+    score += 2;
+  }
+
   // Continuation / progress queries (only meaningful if already in scene)
   if (/\b(is it ready|is it done|how'?s it going|how much longer|what'?s next|smells? good|taste)\b/.test(t)) {
     score += 1; // weak signal alone, but momentum will amplify

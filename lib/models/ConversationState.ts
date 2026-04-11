@@ -28,6 +28,9 @@ const conversationStateSchema = new mongoose.Schema({
     default: null,
   },
   modeMomentum: { type: Number, default: 0 }, // 0 = no inertia, higher = stronger lock
+  consecutiveQuestionTurns: { type: Number, default: 0 }, // tracks how many turns in a row had questions
+  lastDepthLevel: { type: String, enum: ["casual", "normal", "deep"], default: "normal" },
+  lastToneStyle: { type: String, enum: ["calm", "playful", "direct", "soft", "observational"], default: "calm" },
 });
 
 export default mongoose.models.ConversationState || mongoose.model("ConversationState", conversationStateSchema);
