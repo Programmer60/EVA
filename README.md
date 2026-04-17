@@ -185,6 +185,21 @@ Template for future entries:
 	- Observer → Participant shift: above `warming` tier, EVA is instructed to use "I" and "we" language, own her side of the connection, and respond personally (not abstractly) to appreciation/connection signals.
 	- Per-signal response rules with ❌ BAD / ✅ GOOD examples baked into the prompt for appreciation, connection, trust, and vulnerability scenarios.
 
+### 2026-04-18
+
+- Completed Conversational Depth Engine (`lib/behavior/conversationalDepthEngine.ts`):
+	- Session Threading: captures up to 8 key moments per session (topic/gist/emotion/turnNumber) and connects dots back to earlier statements with 35% trigger probability after turn 4. "That kind of connects to what you were saying earlier about…"
+	- Emotional Memory Tagging: tracks how the user FEELS about recurring topics using a `topicEmotionMap` with `lastEmotion`, `frequency`, and `trend` (stable/improving/worsening). When a topic trend changes, EVA notices: "You seem a bit lighter about this now…"
+	- Self-Disclosure Engine: curated bank of EVA's own "thoughts" across 8 topic areas (loneliness, music, growth, pressure, relationships, loss, creativity, general). 20% trigger probability, never during heavy emotions. Makes EVA feel like someone who THINKS, not just listens.
+	- `resetSessionThreads()` utility for clearing threads on new session start.
+- Critical Fix: Over-Architecture Resolution — 6 targeted fixes:
+	- 1. Coherence Governor (`lib/behavior/coherenceGovernor.ts`): final reconciliation layer with 8 conflict rules — prevents impossible combos like playful+grief, casual+emotional mode, deep+new bond tier. Sits at the END of all engines.
+	- 2. Relevance-Weighted Threading: replaced naive 35% random trigger with `topicOverlap*0.5 + emotionalSimilarity*0.3 + recency*0.2` scoring. Score >0.6 forces callback, 0.3-0.6 is probabilistic, <0.3 skips.
+	- 3. Neutral Drift Detection: emotional memory now detects neg→neutral transitions as "improving" — "You seem a bit steadier about this now."
+	- 4. Self-Disclosure Guardrails: max 2 per session, 6-turn cooldown between disclosures, contextual anchoring ("It reminds me of something I've been thinking about lately…" instead of standalone).
+	- 5. Meta-Phrase Killer (post-processing): strips "It makes me wonder", "It feels like", "It really shows", "The thing is" — converts to direct language ("I wonder", "Feels like").
+	- 6. Micro-Imperfection Injection: 30% chance of converting a mid-sentence period to ellipsis for trailing-off feel. Only on medium-length replies.
+
 ## Current Status (April 2026)
 
 Completed now:

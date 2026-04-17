@@ -31,6 +31,32 @@ const conversationStateSchema = new mongoose.Schema({
   consecutiveQuestionTurns: { type: Number, default: 0 }, // tracks how many turns in a row had questions
   lastDepthLevel: { type: String, enum: ["casual", "normal", "deep"], default: "normal" },
   lastToneStyle: { type: String, enum: ["calm", "playful", "direct", "soft", "observational"], default: "calm" },
+
+  // Conversational Threading — captures key moments from the current session
+  sessionThreads: {
+    type: [new mongoose.Schema({
+      topic: String,
+      gist: String,        // short 1-line summary of what they said
+      emotion: String,     // how they felt about it
+      turnNumber: Number,
+    }, { _id: false })],
+    default: [],
+  },
+
+  // Emotional Memory — how the user feels about recurring topics
+  topicEmotionMap: {
+    type: Map,
+    of: new mongoose.Schema({
+      lastEmotion: String,
+      frequency: Number,
+      trend: { type: String, enum: ["stable", "improving", "worsening"], default: "stable" },
+    }, { _id: false }),
+    default: {},
+  },
+
+  // Self-disclosure guardrails
+  disclosureCount: { type: Number, default: 0 },     // per session, max 2
+  lastDisclosureTurn: { type: Number, default: -10 }, // min 6 turn gap
 });
 
 export default mongoose.models.ConversationState || mongoose.model("ConversationState", conversationStateSchema);

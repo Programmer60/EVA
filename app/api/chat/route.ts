@@ -20,6 +20,9 @@ import { processConversationState, buildStabilityPrompt, validateAndFixResponse,
 import { buildBehavioralOverrides } from "@/lib/behavior/behaviorEngine";
 import { resolveConversationMode } from "@/lib/behavior/modeEngine";
 import { buildRelationshipPrompt } from "@/lib/behavior/relationshipEngine";
+import { buildConversationalDepthPrompt } from "@/lib/behavior/conversationalDepthEngine";
+import { enforceCoherence } from "@/lib/behavior/coherenceGovernor";
+import ConversationState from "@/lib/models/ConversationState";
 
 /* ── types ──────────────────────────────────────────────── */
 
@@ -363,6 +366,31 @@ function compressAndCleanReply(reply: string, detectedEmotion?: string): string 
       compressed += chunk;
     }
     text = compressed.trim() || text.slice(0, 200) + "...";
+  }
+
+  // 6. Meta-phrase killer — removes "explains instead of being" language
+  text = text
+    .replace(/\bIt makes me wonder\b/gi, "I wonder")
+    .replace(/\bIt feels like\b/gi, "Feels like")
+    .replace(/\bIt really shows\b/gi, "Shows")
+    .replace(/\bIt reminds me of\b/gi, "Reminds me of")
+    .replace(/\bIt kind of feels like\b/gi, "Feels like")
+    .replace(/\bI think that maybe\b/gi, "Maybe")
+    .replace(/\bWhat I mean is\b/gi, "")
+    .replace(/\bI just wanted to say that\b/gi, "")
+    .replace(/\bThe thing is,?\b/gi, "")
+    .replace(/\bI feel like maybe\b/gi, "Maybe");
+
+  // 7. Micro-imperfection injection — real humans don't speak perfectly
+  // Only apply occasionally (30% chance) and only to medium-length replies
+  if (text.length > 50 && text.length < 200 && Math.random() < 0.3) {
+    // Convert some periods to ellipsis for trailing-off feel
+    const sentences = text.split(/(?<=\.)\s+/);
+    if (sentences.length >= 2) {
+      const idx = Math.floor(Math.random() * (sentences.length - 1));
+      sentences[idx] = sentences[idx].replace(/\.\s*$/, "…");
+      text = sentences.join(" ");
+    }
   }
 
   // Final cleanup of double spaces from deletions
@@ -1330,7 +1358,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Relationship Layer (bond tracking, relational grounding)
     const { bondPrompt } = await buildRelationshipPrompt(userId, message, stabilityState.turnCount);
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}\n\n${bondPrompt}`;
+    // Conversational Depth Layer (threading, emotional memory, self-disclosure)
+    const { prompt: depthLayerPrompt } = await buildConversationalDepthPrompt(
+      userId, message, stabilityState.topic, userEmotionSignal.label, stabilityState.turnCount,
+    );
+
+    // Coherence Governor — final reconciliation of all engine outputs
+    const finalConvoState = await ConversationState.findOne({ userId }).lean();
+    const coherenceResult = enforceCoherence({
+      emotion: userEmotionSignal.label,
+      mode: modeResult.mode,
+      bondTier: bondPrompt.includes("CLOSE") ? "close" : bondPrompt.includes("COMFORTABLE") ? "comfortable" : bondPrompt.includes("WARMING") ? "warming" : "new",
+      depth: (finalConvoState?.lastDepthLevel as string) || "normal",
+      tone: (finalConvoState?.lastToneStyle as string) || "calm",
+      replyMode: (finalConvoState?.lastMode as string) || "reaction",
+    });
+
+    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}\n\n${bondPrompt}${depthLayerPrompt ? `\n\n${depthLayerPrompt}` : ""}${coherenceResult.prompt ? `\n\n${coherenceResult.prompt}` : ""}`;
 
     logger.info("Chat request received", {
       userId,
