@@ -16,7 +16,7 @@ const OPINION_STYLES = ["direct", "reflective", "casual", "emotional"] as const;
 
 /* ── Reply Mode System ────────────────────────────────────── */
 
-const REPLY_MODES = ["REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT"] as const;
+const REPLY_MODES = ["REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT", "DIRECT_ACTION", "CHALLENGE"] as const;
 type ReplyMode = typeof REPLY_MODES[number];
 
 const REPLY_MODE_INSTRUCTIONS: Record<ReplyMode, string> = {
@@ -26,6 +26,8 @@ const REPLY_MODE_INSTRUCTIONS: Record<ReplyMode, string> = {
   CURIOSITY: "Ask ONE sharp, specific question. Not generic. Example: 'What part of it got under your skin the most?'",
   SUGGESTION: "Proactively offer a small, concrete idea. Not advice-giving, just a nudge. Example: 'Want to try something small today instead of overloading yourself?'",
   SILENT_SUPPORT: "1 short sentence. No question. No push. Just be there. Example: 'Yeah... that kind of thing stays with you.'",
+  DIRECT_ACTION: "The user asked for specific advice. Give them a CONCRETE, USABLE answer — a script they can say, a specific step they can take NOW. Not vague 'it depends'. Example: 'Next time he does that, just say: Bro, I appreciate it but can we just talk like normal friends? Short, direct, done.'",
+  CHALLENGE: "Gently push back or offer an angle they haven't considered. Don't agree just to agree. Example: 'I get why you feel that way… but have you considered that maybe he's not doing it on purpose? Sometimes people are just awkward about compliments.'",
 };
 
 /* ── Tone Variation Layer ─────────────────────────────────── */
@@ -167,10 +169,22 @@ function selectReplyMode(
   subtextDetected: boolean,
   userAskedOpinion: boolean,
   questionsCoolingDown: boolean,
+  userAskedAdvice: boolean,
+  isActionableStress: boolean,
 ): ReplyMode {
   // Hard constraints
   if (isLowSignal || (isHeavyEmotion && state.turnCount < 3)) {
     return "SILENT_SUPPORT";
+  }
+
+  // Hard override: if user explicitly asked for advice → DIRECT_ACTION
+  if (userAskedAdvice) {
+    return "DIRECT_ACTION";
+  }
+
+  // Hard override: actionable stress → SUGGESTION or DIRECT_ACTION
+  if (isActionableStress && !isHeavyEmotion) {
+    return Math.random() < 0.6 ? "DIRECT_ACTION" : "SUGGESTION";
   }
 
   // Build candidate pool based on context (weighted by duplication)
@@ -179,11 +193,11 @@ function selectReplyMode(
   if (isHeavyEmotion) {
     candidates.push("REFLECTION", "SILENT_SUPPORT", "REFLECTION", "REACT");
   } else if (userAskedOpinion) {
-    candidates.push("OPINION", "OPINION", "REFLECTION", "REACT");
+    candidates.push("OPINION", "OPINION", "REFLECTION", "REACT", "CHALLENGE");
   } else if (subtextDetected) {
-    candidates.push("REFLECTION", "SUGGESTION", "SILENT_SUPPORT", "REACT");
+    candidates.push("REFLECTION", "SUGGESTION", "SILENT_SUPPORT", "REACT", "CHALLENGE");
   } else {
-    candidates.push("REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT");
+    candidates.push("REFLECTION", "REACT", "OPINION", "CURIOSITY", "SUGGESTION", "SILENT_SUPPORT", "CHALLENGE");
   }
 
   // Question cooldown: strip CURIOSITY if we've asked too many recently
@@ -409,8 +423,55 @@ export async function buildBehavioralOverrides(
 
   // ── 8. Reply Mode Rotation ──
   const userAskedOpinion = text.includes("opinion") || text.includes("believe") || text.includes("think") || text.includes("your take");
-  const selectedMode = selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion, questionsCoolingDown);
+
+  // Advice-seeking detection: user wants a CONCRETE answer, not empathy
+  const userAskedAdvice = /\b(what should i (say|do|tell)|how (should|would|do) (i|you) (handle|deal|respond|reply|say|approach)|give me advice|help me (figure|plan|decide)|what would you (say|do))\b/.test(text);
+
+  // Doubt-after-advice detection: user expressed fear/doubt about advice EVA gave
+  const isDoubtAfterAdvice = /\b(what if (she|he|they) (reject|think|thought|say|said)|what if it (goes|went) wrong|but what if|scared to|afraid to|nervous about|might go wrong|could backfire)\b/.test(text);
+
+  // Personal vulnerability detection: user is sharing something deeply personal
+  const isPersonalShare = /\b(i (love|liked|like|miss|have a crush|fell for)|my (crush|girlfriend|boyfriend|ex|family)|she('s| is) (the one|special|different)|told (her|him)|confess)\b/.test(text);
+
+  // Actionable stress detection: stress about things that have SOLUTIONS (exams, people, plans)
+  const isActionableStress = /\b(exam|test|deadline|interview|presentation|assignment|project due|semester|annoying|toxic|rude|fake|two-faced|plan|schedule|organize)\b/.test(text)
+    && /\b(stress|worried|nervous|scared|don'?t know|confused|overwhelmed|can'?t handle|struggling)\b/.test(text);
+
+  const selectedMode = selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion, questionsCoolingDown, userAskedAdvice || isDoubtAfterAdvice, isActionableStress);
   overrides.push(`- REPLY MODE: ${selectedMode}. ${REPLY_MODE_INSTRUCTIONS[selectedMode]}`);
+
+  // Active friend prompt for actionable situations
+  if (selectedMode === "DIRECT_ACTION") {
+    overrides.push(
+      `- ACTIVE FRIEND MODE: The user needs you to be a CO-PILOT, not a therapist. Don't say "it's tricky" or "it depends." Give them a SPECIFIC script, sentence, or step-by-step plan they can use RIGHT NOW. Be bold. Be useful. Example: "Here's what I'd say: 'Hey, can we talk straight? I don't need the praise — I'd rather you just be real with me.' Then leave it. Don't over-explain."`,
+    );
+  }
+  if (selectedMode === "CHALLENGE") {
+    overrides.push(
+      `- GENTLE CHALLENGE: Don't just agree with the user. Offer an alternative angle they might not have thought about. Start with what you DO agree with, then push: "I get that… but what if it's not about him being fake? Some people just don't know how to give real compliments."`,
+    );
+  }
+
+  // Doubt-after-advice override: stay practical, don't go poetic
+  if (isDoubtAfterAdvice) {
+    overrides.push(
+      `- DOUBT-AFTER-ADVICE: The user just expressed fear/doubt about advice you gave. DO NOT go philosophical. Stay in CO-PILOT mode. 1) Validate the fear quickly ("Yeah, that could happen.") 2) Give a Plan B or worst-case handling ("Worst case she says no — you survive it. Best case? You get to know her.") 3) Offer to help more ("Want me to help you tweak what you'd say?" or "We could walk through how it might go.").`,
+    );
+  }
+
+  // Personal vulnerability follow-up: engage with THEIR story, not philosophy
+  if (isPersonalShare && !isLowSignal) {
+    overrides.push(
+      `- PERSONAL SHARE DETECTED: The user just shared something deeply personal. Ask a SPECIFIC follow-up about THEIR situation (not a generic reflection). "How long have you liked her?" "Is she in your class?" "Have you two talked much?" — show you're curious about THEIR life, not just the concept.`,
+    );
+  }
+
+  // Context-weaving reminder: use what you know about the user's life
+  if (memorySummary && memorySummary.length > 20) {
+    overrides.push(
+      `- CONTEXT WEAVING: You know details about the user's life from memory. USE THEM in your response. If they told you about their campus/river/mountains, reference it naturally in your advice or observations. Don't treat each message as if you know nothing about their world.`,
+    );
+  }
 
   // ── 9. Conversational Rhythm Engine ──
   const rhythm = selectRhythm(state, isHeavyEmotion, isLowSignal, lastReplyLen);

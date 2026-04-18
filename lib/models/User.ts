@@ -34,6 +34,22 @@ const userSchema = new mongoose.Schema({
     default: [],
   },
   lastBondUpdate: { type: Date, default: Date.now },
+
+  // Life Awareness Engine
+  lifeEvents: {
+    type: [new mongoose.Schema({
+      event: String,           // "exams", "interview", "birthday", "trip"
+      date: Date,              // when it happens
+      importance: { type: String, enum: ["low", "medium", "high", "critical"], default: "medium" },
+      context: String,         // extra details: "semester finals at NIT Uttarakhand"
+      source: String,          // how EVA learned this: "user mentioned", "inferred"
+      lastNudgedAt: Date,      // when EVA last brought this up
+      nudgeCount: { type: Number, default: 0 },
+      resolved: { type: Boolean, default: false }, // true after event passes
+    }, { _id: false })],
+    default: [],
+  },
+  lastLifeNudge: { type: Date, default: null }, // global cooldown for life nudges
 });
 
 export default mongoose.models.User || mongoose.model("User", userSchema);

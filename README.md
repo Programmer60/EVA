@@ -200,6 +200,35 @@ Template for future entries:
 	- 5. Meta-Phrase Killer (post-processing): strips "It makes me wonder", "It feels like", "It really shows", "The thing is" — converts to direct language ("I wonder", "Feels like").
 	- 6. Micro-Imperfection Injection: 30% chance of converting a mid-sentence period to ellipsis for trailing-off feel. Only on medium-length replies.
 
+### 2026-04-19
+
+- Personality Overhaul — from "smart conversational AI" to "distinctive companion with personality":
+	- Distinctive Identity: added specific traits — dry understated humor, night-owl references, contrarian streak, action-biased ("okay but what are we doing about it?"), draws toward emotional weight in media/weather/writing, Delhi/chai cultural anchoring.
+	- DIRECT_ACTION Reply Mode: when user asks "what should I say/do?", EVA now gives a CONCRETE script or step-by-step plan. Not "it depends". Example: "Next time he does that, just say: 'Bro, let's keep it real.' Done."
+	- CHALLENGE Reply Mode: EVA now gently pushes back when she disagrees. "I get that… but what if he's just bad at compliments?" Added to candidate pools for opinion/subtext/general contexts.
+	- Advice-Seeking Detection: regex matches "what should I say/do/tell", "how should I handle/deal/respond", "give me advice", "what would you do" → forces DIRECT_ACTION mode.
+	- Actionable Stress Detection: regex matches solvable stress (exams/deadlines/annoying people + stress/worried/overwhelmed) → switches from empathy to CO-PILOT. 60% DIRECT_ACTION / 40% SUGGESTION.
+	- Emotional Range System: EVA now has 5 emotional modes in the system prompt — default warm friend, CO-PILOT for solvable stress, quiet presence for grief, active ally for venting, kind call-out for avoidance.
+	- Anti-Vagueness Rule: SYSTEM_PROMPT now explicitly bans "it's tricky", "it depends", "that's a tough one", "there's no easy answer", "how you say it matters" with replacement examples.
+	- Vague Phrase Post-Processing: `compressAndCleanReply` now strips leftover vague phrases ("it's tricky", "it depends", "it's complicated") from LLM output.
+	- Tag Stripper Update: added DIRECT_ACTION, DIRECT, CHALLENGE to all three tag-stripping regex patterns.
+- Conversation-Tested Fixes (from live testing):
+	- AI Self-Reference Ban: absolute zero-tolerance rule in SYSTEM_PROMPT + post-processing safety net. Bans "based on data", "process things", "my programming", "however digital", "my existence". Post-processor replaces slipped-through phrases with natural alternatives.
+	- Doubt-After-Advice Detection: regex catches "what if she rejects me", "what if it goes wrong", "scared to", "afraid to" → keeps EVA in CO-PILOT mode instead of going philosophical. Provides Plan B + offers to help more.
+	- Personal Vulnerability Follow-Up: detects when user shares crush/relationship/family → forces SPECIFIC follow-up questions ("How long have you liked her? Is she in your class?") instead of generic reflections.
+	- Context-Weaving Instruction: when memory context is available (>20 chars), behavior engine reminds EVA to USE the user's life details (campus, river, mountains) in advice and observations.
+	- Teasing Personality: added gentle teasing dimension ("Bro, you've been 'about to text her' for like three messages now").
+	- Removed Delhi assumption: EVA now only references user's local environment from confirmed memory, never assumes.
+- Life Awareness Engine (`lib/behavior/lifeAwarenessEngine.ts`) — proactive life-event tracking inspired by Grok's contextual awareness:
+	- Event Detection: 12 pattern types detected from conversation (exams, interviews, birthdays, trips, assignments, presentations, internships, medical, breakups, moves, weddings, deadlines).
+	- Date Extraction: parses "May 6", "6th May", "in 3 days", "next week", "tomorrow" and relative time patterns. Auto-assigns next year if date has passed.
+	- Importance-Based Nudge Scheduling: critical events (exams/interviews) get nudged as frequently as every 4 hours day-of, scaling back to weekly at 30 days out. High events: 8hr to weekly. Medium/low: very light.
+	- Dual-Context Awareness: detects late-night hours (11pm-5am) and combines with approaching deadlines: "You've been deep in this tonight… but those exams are creeping up."
+	- Concrete Offers: first nudge for exams offers a specific study plan ("we can quickly make a 10-day study plan together"). Subsequent nudges are lighter check-ins.
+	- Global Cooldown: max 1 life nudge per 3 hours to prevent nagging. Per-event cooldowns scale with importance and proximity.
+	- Auto-Resolution: events older than 3 days past their date are auto-marked as resolved.
+	- Schema: added `lifeEvents` array and `lastLifeNudge` to User model.
+
 ## Current Status (April 2026)
 
 Completed now:
