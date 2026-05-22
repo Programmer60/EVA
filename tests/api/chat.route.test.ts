@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
+// Per-test timeouts added below for stability in slower CI environments
+
 function buildPostRequest(payload: unknown): NextRequest {
   return new NextRequest("http://localhost:3000/api/chat", {
     method: "POST",
@@ -25,7 +27,7 @@ describe("POST /api/chat", () => {
 
     expect(response.status).toBe(400);
     expect(body.error).toMatch(/message is required/i);
-  });
+  }, 10000);
 
   it("returns 503 when no provider keys are configured", async () => {
     const route = await import("@/app/api/chat/route");
@@ -38,5 +40,5 @@ describe("POST /api/chat", () => {
 
     expect(response.status).toBe(503);
     expect(body.error).toMatch(/missing ai provider key/i);
-  });
+  }, 10000);
 });

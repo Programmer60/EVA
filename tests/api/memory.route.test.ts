@@ -36,7 +36,8 @@ describe("GET /api/memory", () => {
   });
 
   it("returns 403 in production", async () => {
-    process.env.NODE_ENV = "production";
+    const env = process.env as Record<string, string | undefined>;
+    env.NODE_ENV = "production";
     const route = await import("@/app/api/memory/route");
 
     const response = await route.GET(buildGetRequest("userId=u-1"));
@@ -48,7 +49,8 @@ describe("GET /api/memory", () => {
   });
 
   it("returns normalized memory facts in development", async () => {
-    process.env.NODE_ENV = "development";
+    const env = process.env as Record<string, string | undefined>;
+    env.NODE_ENV = "development";
     memoryLeanMock.mockResolvedValueOnce([
       {
         key: "preference:likes:chess",
@@ -74,7 +76,7 @@ describe("GET /api/memory", () => {
 
     expect(response.status).toBe(200);
     expect(connectDBMock).toHaveBeenCalledTimes(1);
-    expect(memoryFindMock).toHaveBeenCalledWith({ userId: "u-1" });
+    expect(memoryFindMock).toHaveBeenCalledWith({ userId: "u-1", deletedAt: null });
     expect(body.userId).toBe("u-1");
     expect(body.count).toBe(1);
     expect(body.memories[0]).toMatchObject({

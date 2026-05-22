@@ -38,6 +38,40 @@ export interface ModeResult {
   prompt: string;
 }
 
+/* ── Reply Mode Heuristics (OPINION selection) ───────────────────────── */
+
+export type ReplyMode = "opinion" | "ask" | "react" | "reflect" | "sit" | "direct" | "challenge";
+
+/**
+ * Decide whether to use an OPINION-style reply based on input and mode.
+ * Current heuristic (conservative):
+ * - Explicit phrasing asking for opinion: "what do you think", "what would you", "do you think"
+ * - Social/advice language: "should I", "what should I", "would you", "how to" when paired with social keywords
+ * - Keywords indicating perceived social awkwardness or overthinking: "awkward", "overestimate", "nervous"
+ */
+export function chooseReplyMode(input: string, modeResult: ModeResult, emotionLabel?: string): ReplyMode | undefined {
+  const t = input.toLowerCase();
+
+  // Clear strong negative/emotional contexts where opinion might be inappropriate
+  if (modeResult.mode === "emotional") {
+    // If highly emotional and the line contains explicit ask-for-opinion, allow opinion.
+    if (/\b(what do you think|what would you|do you think|would you|what should i|should i)\b/.test(t)) return "opinion";
+    return undefined;
+  }
+
+  // Direct opinion requests
+  if (/\b(what do you think|what would you|do you think|would you|what should i|should i|what should we)\b/.test(t)) return "opinion";
+
+  // Social/advice signals
+    if (/\b(advice|should i|what to say|how to (start|approach|say|begin|ask|introduce)|how would i|what should i|how do i (ask|approach|start|say))\b/.test(t)) return "opinion";
+
+  // Overthinking / awkwardness signals
+  if (/\b(awkward|awkwardness|overestimate|nervous|anxious|hesitate|hesitating)\b/.test(t)) return "opinion";
+
+  // Default: let other engines decide
+  return undefined;
+}
+
 /* ── Signal Extraction ────────────────────────────────────── */
 
 function scoreImagined(text: string): number {

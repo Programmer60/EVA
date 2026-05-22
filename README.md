@@ -229,7 +229,63 @@ Template for future entries:
 	- Auto-Resolution: events older than 3 days past their date are auto-marked as resolved.
 	- Schema: added `lifeEvents` array and `lastLifeNudge` to User model.
 
-## Current Status (April 2026)
+### 2026-05-18
+
+- Completed Phase 5 Avatar System — Emotionally Reactive Presence:
+	- Built pure inline SVG face (`EvaFace.tsx`) with parameterized eyes, eyebrows, mouth, iris, cheek glow, and head tilt. Zero external dependencies.
+	- Created `avatarEngine.ts` with 9 emotion expression presets, each controlling 10 facial parameters (eyeOpenness, pupilSize, browAngle, browHeight, mouthCurve, mouthOpenness, mouthWidth, cheekGlow, headTilt, irisHue).
+	- Established "thoughtful warmth" as EVA's signature resting state — slight smile, soft eyes, warm cheek glow, gentle head tilt. Not neutral, not cute — a quiet intelligent presence.
+	- Built Eye Attention System with per-presence-state gaze behaviors:
+		- Idle: gentle random pupil drift
+		- Listening: steady forward attentive gaze, almost still pupils
+		- Thinking: eyes drift slightly downward (contemplative processing)
+		- Speaking: gentle side-to-side pupil drift
+		- Emotional pause: eyes soften downward, very still (reflective)
+	- Built blink scheduler with presence-aware timing (thinking: 5-8s intervals with 200ms slow blinks, speaking: 2.8-5s with 130ms quick blinks).
+	- Added idle micro-animations for perceived consciousness: breathing float (6s CSS cycle), brow micro-drift (slow sine wave), head micro-tilt (barely perceptible).
+	- Built `lipSyncAnalyzer.ts` with dual modes:
+		- Server TTS: Web Audio API AnalyserNode with RMS amplitude analysis
+		- Browser TTS: simulation using `onboundary` word events + layered sine waves
+		- Exponential smoothing: opens fast (0.35), closes slower (0.15)
+	- Capped lip sync at maxMouthOpenness 0.25 — mouth is NOT the focus, presence is.
+	- Added speaking state enhancements: subtle cheek glow boost (+0.08) and container brightness boost during TTS. Face "warms up" while talking.
+	- Added 5 presence idle states in `AvatarPanel.tsx`:
+		- Present (idle/listening/emotional_pause): steady gaze, regular blinks
+		- Thinking: ambient glow pulse, downward gaze, slower blinks
+		- Speaking: cheek warmth, gentle drift, lip sync active
+	- After speaking: 2.2s "emotional pause" (eyes soften, gaze drifts down) before returning to Present.
+	- After 25s of inactivity in listening state, transitions to idle with more casual pupil wander.
+	- Removed emotion label badges from avatar UI — face + ambient glow communicate emotion. Humans don't wear labels. Only presence state shown: "Present", "Thinking", "Speaking".
+	- Boosted expression contrast for emotional readability — concern, warmth, and empathy expressions now have clearly distinguishable brow angles, mouth curves, pupil sizes, and iris colors.
+	- Expression lerp rate boosted from 0.045 to 0.07 so emotions are actually readable before fading.
+	- Ambient glow color shifts per emotion with boosted intensity (e.g., concerned: muted steel-blue, empathetic: warm teal, sad: deep blue).
+	- Added event bridge between voice pipeline and avatar:
+		- `eva:tts-start` (with mode + audio element reference) from ttsManager
+		- `eva:tts-end` from ttsManager
+		- `eva:tts-word-boundary` from ttsManager (drives browser TTS lip sync simulation)
+		- `eva:presence-change` from ChatPanel (thinking/streaming/idle phase transitions)
+	- Smooth expression interpolation via per-frame `stepToward()` with configurable lerp rates.
+	- Full requestAnimationFrame loop throttled to ~30fps with batched React state updates.
+- Design Identity Established:
+	- EVA is NOT a cute energetic assistant.
+	- EVA IS a quiet intelligent presence — like a late-night conversation, a rainy day companion, a thoughtful listener.
+	- Signature state: "thoughtful warmth" — warm eyes, gentle smile, soft ambient glow.
+
+### 2026-05-22
+
+- Completed Phase 5.5 Companion Intelligence & Analytics:
+	- Added `TurnAnalytics` behavioral fingerprint records per turn and a `GET /api/analytics` aggregation endpoint.
+	- Added `LifeArc` tracking plus `lifeArcEngine` seeding/status progression from existing life-awareness events.
+	- Added `buildUserProfile()` computed profile aggregation and injected the profile into the chat system prompt.
+	- Added memory repetition penalties and topic freshness scoring to retrieval.
+	- Added quick debug cards on the home page and a full `/dashboard` analytics page.
+	- Added OPINION / EXPERIENCE reply mode and automatic OPINION selection heuristics.
+	- Added provider health persistence plus Prometheus metrics for provider errors and latency.
+	- Added user-scoped memory CRUD and a profile editor page for viewing, editing, and soft-deleting memories.
+	- Added current profile visibility to Memory Debug so the active browser profile is visible alongside raw memory facts.
+	- Expanded analytics to include session length, memory retrieval count, most retrieved memories, bond trend, emotion trend, and reply mode distribution.
+
+## Current Status (May 2026)
 
 Completed now:
 
@@ -247,12 +303,39 @@ Completed now:
 - Development memory debug tools are active:
 	- `GET /api/memory` debug endpoint (non-production)
 	- in-app Memory Debug panel with one-click snapshot export (clipboard + file fallback)
+	- profile summary surfaced in Memory Debug for the active browser `userId`
+- User memory management is available in the browser profile editor:
+	- view, edit, and soft-delete memories
+	- current browser `userId` is stored in localStorage and used for all memory/history/profile queries
+- Phase 5 Avatar System is live:
+	- Emotionally reactive SVG face with 9 expression presets and 10 facial parameters per emotion.
+	- Eye attention system with per-presence gaze drift, blink scheduling, and pupil behavior.
+	- Lip sync (Web Audio API + simulation fallback) with capped amplitude.
+	- 5 presence states (idle, listening, thinking, speaking, emotional_pause) with perceived consciousness.
+	- Speaking state enhancements (cheek warmth, glow boost).
+	- Event bridge between voice pipeline and avatar (tts-start/end/word-boundary, presence-change).
+	- Phase 5.5 companion intelligence is live:
+		- turn analytics persistence + analytics API
+		- life arcs and computed user profile injection
+		- memory repetition/freshness scoring
+		- dashboard quick cards + `/dashboard`
+		- OPINION / EXPERIENCE reply routing
+		- user profile editor + scoped memory CRUD
+		- expanded analytics dashboard metrics and trend views
 
 In progress now:
 
+- Model fallback/auto-routing hardening and per-model prompt tuning.
+- Monitoring/alerting for provider errors and degraded OpenRouter states.
+- Streaming response and latency optimization work.
 - Browser speech-recognition stability across environments (network/service variability).
 - Voice reliability hardening and observability (latency/error tracking per mode/provider).
-- Avatar behavior integration with voice + emotion events.
+- Gaze + pause engine refinement (pre-response downward gaze with deliberate pause for perceived thoughtfulness).
+
+Launch status:
+
+- Internal / closed beta: ready.
+- Public beta: not yet ready until auth, deployment validation, and operational monitoring are finished.
 
 ## Memory Intelligence
 
@@ -315,6 +398,71 @@ A **diversity filter** limits max 2 memories per category (preference/fact/summa
 | `createdAt` | Date | Memory lifecycle |
 
 Access stats: `accessCount` is incremented, `lastAccessed` is updated on every retrieval.
+
+## Analytics (Phase 5.5)
+
+EVA now collects structured per-turn telemetry and exposes aggregated analytics for debugging and product insights. The analytics features are intended for internal use and are protected by the same non-production guards as the debug endpoints. Heavy aggregations are opt-in where noted.
+
+- **What we collect**: Turn-level fingerprints (`TurnAnalytics`) including `replyMode`, `tone`, `bondScore`, `memoriesRetrieved`, `providerUsed`, `latency`, and emotion tags. Life-arc events and computed profile snapshots are also produced by `buildUserProfile()`.
+- **Aggregations available**: Total conversations, Average session length (turns & minutes), Memory retrieval count, Most retrieved memories, Bond score trend, Emotion trend, Reply mode distribution, Top users by interaction, Recent turn samples with analytics metadata.
+
+### Where to access
+
+- Dashboard UI: open the local app and navigate to `/dashboard` to view cards, trend charts, and recent-turn samples.
+- Analytics API: `GET /api/analytics` — supports optional query params:
+	- `userId` (string): scope aggregation to a single browser identity.
+	- `limit` (number): number of recent turns to include (default 50).
+
+Example (global aggregates):
+
+```bash
+curl -sS "http://localhost:3000/api/analytics?limit=100" | jq
+```
+
+Example (per-browser profile):
+
+```bash
+curl -sS "http://localhost:3000/api/analytics?userId=<your-local-userId>&limit=50" | jq
+```
+
+- Metrics (Prometheus): EVA exposes Prometheus metrics at `GET /api/metrics` in Prometheus text format. Key metric names include:
+	- `eva_provider_latency_seconds_bucket` (histogram)
+	- `eva_provider_errors_total` (counter)
+	- `eva_provider_failures_total` (counter)
+
+Example scrape config snippet for Prometheus:
+
+```yaml
+scrape_configs:
+	- job_name: 'eva-ai'
+		metrics_path: /api/metrics
+		static_configs:
+			- targets: ['<eva-host>:3000']
+```
+
+### Memory debug / profile access
+
+- Memory debug endpoint (non-production): `GET /api/memory?userId=<id>&limit=<n>`
+	- By default the endpoint returns raw memory facts and is fast. To include the computed profile (heavy aggregation), use `profile=true`:
+
+```bash
+curl -sS "http://localhost:3000/api/memory?userId=<your-local-userId>&limit=200&profile=true" | jq
+```
+
+NOTE: `profile=true` can run expensive aggregations; it is intentionally opt-in and may be disabled in production environments.
+
+### Admin & safety notes
+
+- All per-user queries must include `userId` to prevent cross-browser contamination. In development, browser `userId` is stored in `localStorage` and surfaced in the Memory Debug panel and profile editor.
+- The analytics and memory debug endpoints are considered internal tooling and should be protected or disabled in public deployments.
+- For production monitoring, pair Prometheus with alert rules for `eva_provider_errors_total` and latency SLOs on `eva_provider_latency_seconds_bucket`.
+
+### Troubleshooting & tips
+
+- If the dashboard shows missing aggregates, ensure the MongoDB connection is healthy and `TurnAnalytics` documents are being written. Check server logs for `analyticsService` errors.
+- If `GET /api/metrics` is empty, confirm `prom-client` is available and not blocked by environment feature flags — the app falls back to no-op metrics if `prom-client` is unavailable.
+- The vendored OpenAI package `tsconfig.json` may trigger editor warnings; consider pinning or applying a durable patch if the editor flags it after installs.
+
 
 ## Conversational Intelligence
 
@@ -539,24 +687,73 @@ When to move to paid providers:
 2. Need consistent multilingual support beyond browser capabilities.
 3. Need branded high-quality synthetic voices for production UX.
 
-### Phase 5: Avatar System (Weeks 5-6)
+### Phase 5: Avatar System (Weeks 5-6) ✅ COMPLETED
+
+Status: Completed on 2026-05-18.
+
+Design philosophy: "emotionally readable calm presence" — NOT "perfect animated face." EVA is a quiet intelligent presence, not a cute assistant.
 
 Deliverables:
 
-- visual avatar in UI
-- mouth movement synced with speech
-- basic emotion expressions
+- ✅ Inline SVG face with parameterized expressions (zero external dependencies)
+- ✅ Eye attention system with per-presence gaze drift and blink scheduling
+- ✅ Lip sync via Web Audio API (server TTS) and simulation (browser TTS), capped at subtle levels
+- ✅ 5 presence idle states creating perceived consciousness
+- ✅ Speaking state enhancements (cheek warmth, ambient glow boost)
+- ✅ Smooth expression transitions driven by emotion engine output
+- ✅ Event bridge connecting voice pipeline to avatar (tts-start/end/word-boundary, presence-change)
 
-Tasks:
+Architecture:
 
-1. Start with Ready Player Me or 2D avatar MVP.
-2. Map TTS playback state to mouth-open animation.
-3. Map emotion labels to expression presets.
-4. Add fallback static avatar for low-end devices.
+```text
+ChatPanel ──eva:presence-change──► AvatarPanel ──expression──► EvaFace (SVG)
+ChatPanel ──eva:assistant-reply──► AvatarPanel ──gaze──────► EvaFace (SVG)
+ttsManager ─eva:tts-start────────► AvatarPanel ──lipSync───► EvaFace (SVG)
+ttsManager ─eva:tts-end──────────► AvatarPanel
+ttsManager ─eva:tts-word-boundary─► AvatarPanel
+avatarEngine ─expression maps────► AvatarPanel
+lipSyncAnalyzer ─amplitude───────► AvatarPanel
+```
+
+Key files:
+
+- `lib/avatar/avatarEngine.ts` — expression maps, interpolation, gaze/presence logic, blink scheduling
+- `lib/avatar/lipSyncAnalyzer.ts` — dual-mode audio amplitude analysis for mouth movement
+- `components/avatar/EvaFace.tsx` — inline SVG face with parameterized features
+- `components/avatar/AvatarPanel.tsx` — state management, RAF animation loop, event listeners, presence FSM
+
+Expression presets (9 emotions, 10 parameters each):
+
+| Emotion | Key Visual Cues |
+|---|---|
+| neutral ("thoughtful warmth") | Slight smile, soft eyes, warm cheek glow — EVA's signature state |
+| happy | Soft squint, smile, cheek glow, green iris |
+| sad | Narrow eyes, furrowed brows, frown, head tilt, muted blue iris |
+| angry | Intense stare, deeply furrowed brows, constricted pupils, red iris |
+| anxious | Wide eyes, raised brows, small pupils, lavender iris |
+| excited | Very wide eyes, big smile, dilated pupils, golden iris |
+| curious | One brow raised, head tilted, bright blue iris |
+| nostalgic | Soft unfocused eyes, wistful half-smile, purple iris |
+| empathetic | Gentle concerned look, soft tilt, warm teal iris |
+| concerned | Focused stare, lowered brows, steel-blue iris |
+
+Presence states:
+
+| State | Eye Behavior | Blink Interval | Trigger |
+|---|---|---|---|
+| Idle | Gentle random pupil drift | 3-6s | Default / 25s inactivity |
+| Listening | Steady forward gaze, almost still | 3.5-5.5s | After response / user typing |
+| Thinking | Eyes drift slightly downward | 5-8s (slow) | ChatPanel thinking phase |
+| Speaking | Gentle side-to-side drift | 2.8-5s | TTS playback active |
+| Emotional pause | Eyes soften downward, very still | 4.5-7.5s | 2.2s after TTS ends |
 
 Definition of done:
 
-- avatar speaks and reflects emotional state in real time.
+- ✅ Avatar shows emotionally readable expressions that change with conversation.
+- ✅ Eyes blink naturally with presence-aware timing.
+- ✅ Pupils drift contextually per presence state.
+- ✅ Mouth moves subtly during speech (not overdone).
+- ✅ Face communicates emotion through glow, expression, and iris color — no labels needed.
 
 ### Phase 6: Realtime and Quality (Weeks 7-8)
 
@@ -608,15 +805,33 @@ app/
 		tts/route.ts
 	page.tsx
 	layout.tsx
+	globals.css
 components/
 	chat/
+		ChatPanel.tsx
 	voice/
+		VoicePanel.tsx
 	avatar/
+		AvatarPanel.tsx
+		EvaFace.tsx
 lib/
 	ai/
 	memory/
 	emotion/
 	audio/
+		ttsManager.ts
+	avatar/
+		avatarEngine.ts
+		lipSyncAnalyzer.ts
+	presence/
+		presenceEngine.ts
+	stability/
+		stabilityEngine.ts
+	behavior/
+		relationshipEngine.ts
+		conversationalDepthEngine.ts
+		coherenceGovernor.ts
+		lifeAwarenessEngine.ts
 	models/
 		User.ts
 		Message.ts
@@ -678,6 +893,25 @@ lib/
 	- `GET /api/memory` endpoint
 	- in-app Memory Debug panel
 	- one-click debug snapshot export (clipboard-first, download fallback)
+11. Completed Phase 5 Avatar System:
+	- Built emotionally reactive SVG face with 9 expression presets (10 parameters each)
+	- Established "thoughtful warmth" as EVA's signature resting state
+	- Built eye attention system with per-presence gaze drift and blink scheduling
+
+12. Completed Phase 5.5 Companion Intelligence & Analytics:
+	- Added turn analytics persistence and aggregation endpoint
+	- Added life arc tracking seeded from life awareness events
+	- Added computed profile builder injected into the chat prompt
+	- Added memory repetition penalties and topic freshness scoring
+	- Added dashboard quick cards on the main page plus a full `/dashboard` view
+	- Added OPINION / EXPERIENCE reply routing and automatic opinion selection heuristics
+	- Built lip sync analyzer (Web Audio API + simulation fallback), capped at subtle levels
+	- Added 5 presence idle states (idle, listening, thinking, speaking, emotional_pause)
+	- Added speaking state enhancements (cheek warmth, ambient glow boost)
+	- Added idle micro-animations (breathing, brow drift, head micro-tilt) for perceived consciousness
+	- Added event bridge: `eva:tts-start`, `eva:tts-end`, `eva:tts-word-boundary`, `eva:presence-change`
+	- Removed emotion labels from avatar UI — face + glow communicate emotion, no labels needed
+	- Boosted expression contrast and lerp rate for emotional readability
 
 ## Remaining Improvements
 
@@ -687,15 +921,18 @@ lib/
 4. Expand automated tests to cover ranking behavior, summary refresh cadence, tone strategy, and voice event flows.
 5. Expand voice test coverage for mode-switch interactions and stop/interrupt race conditions.
 6. Add production observability (latency/error dashboards and alerting per provider).
+7. Avatar polish: gaze + pause engine, cursor tracking, per-emotion transition rates, mobile RAF optimization.
 
 ## Next Goals (Execution Order)
 
-1. Expand tests for memory ranking, summary cadence, emotion confidence, and voice loop interactions.
-2. Add voice interaction regression tests for mode switching and interruption behavior.
-3. Add provider/mode telemetry for STT/TTS latency and failure diagnostics.
-4. Start avatar-expression mapping from emotion labels and playback events.
-5. Add privacy/memory controls in UI (clear memory, consent, and retention settings).
-6. Prepare production hardening: abuse limits, reliability metrics, and deployment checklist.
+1. Gaze + Pause Engine: before emotional replies, add slight downward gaze + 400ms deliberate pause before response appears (perceived thoughtfulness).
+2. Cursor gaze tracking: make pupils subtly follow the user's mouse/touch position.
+3. Expression blending speed: tune per-emotion transition rates (sad transitions should be slower than happy).
+4. Mobile optimization: reduce RAF to ~20fps on mobile devices, responsive avatar sizing.
+5. Expand tests for memory ranking, summary cadence, emotion confidence, and voice loop interactions.
+6. Add provider/mode telemetry for STT/TTS latency and failure diagnostics.
+7. Add privacy/memory controls in UI (clear memory, consent, and retention settings).
+8. Prepare production hardening: abuse limits, reliability metrics, and deployment checklist.
 
 ## Server TTS Fallback
 

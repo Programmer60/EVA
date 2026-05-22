@@ -261,7 +261,13 @@ export async function buildBehavioralOverrides(
   traits: PersonalityTraits,
   isLowSignal: boolean,
   memorySummary?: string,
-): Promise<string> {
+): Promise<{
+  prompt: string;
+  replyMode: ReplyMode;
+  tone: ToneStyle;
+  depth: DepthLevel;
+  rhythm: RhythmLength;
+}> {
   const overrides: string[] = [];
   const text = input.toLowerCase();
 
@@ -507,5 +513,11 @@ export async function buildBehavioralOverrides(
     `- ANTI-FILLER RULE: NEVER use empty filler like "That's cool", "That's interesting", "That sounds great", "That's really nice", "That's awesome". Instead, say something SPECIFIC about what they said. Add texture: an observation, an interpretation, a subtle opinion. If you have nothing specific to add, use silence-mode (1 short sentence).`,
   );
 
-  return overrides.join("\n");
+  return {
+    prompt: overrides.join("\n"),
+    replyMode: selectedMode,
+    tone,
+    depth,
+    rhythm,
+  };
 }

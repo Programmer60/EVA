@@ -1,6 +1,11 @@
 /**
  * ttsManager — Client-side TTS helper with auto-detection and fallback chain.
  *
+ * Supports three modes:
+ *   - "browser"     — Free, uses native speechSynthesis
+ *   - "server"      — OpenAI TTS via /api/tts
+ *   - "elevenlabs"  — ElevenLabs TTS via /api/tts (premium, natural voice)
+ *
  * Usage (from a React component or any client module):
  *   import { detectBestTtsMode, speakWithFallback, stopAll } from "@/lib/audio/ttsManager";
  */
@@ -9,12 +14,13 @@
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-export type TtsMode = "browser" | "server";
+export type TtsMode = "browser" | "server" | "elevenlabs";
 
 export type TtsFallbackStatus =
   | "idle"
   | "speaking-browser"
   | "speaking-server"
+  | "speaking-elevenlabs"
   | "fallback-activated"
   | "error";
 
@@ -37,6 +43,16 @@ let activeObjectUrl: string | null = null;
 let currentRequestId = 0;
 
 /* ------------------------------------------------------------------ */
+/*  Avatar event helpers                                               */
+/* ------------------------------------------------------------------ */
+
+function emitAvatarEvent(name: string, detail?: Record<string, unknown>): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Capability detection                                               */
 /* ------------------------------------------------------------------ */
 
@@ -51,11 +67,16 @@ export function isBrowserTtsAvailable(): boolean {
 /**
  * Pick the best initial TTS mode.
  *
- * - If browser speechSynthesis exists → "browser"
- * - Else if server TTS is enabled     → "server"
- * - Else                              → "browser" (degraded, user sees a note)
+ * Priority: ElevenLabs (if enabled) > Server (if enabled) > Browser
  */
-export function detectBestTtsMode(serverTtsEnabled: boolean): TtsMode {
+export function detectBestTtsMode(
+  serverTtsEnabled: boolean,
+  elevenLabsEnabled?: boolean,
+): TtsMode {
+  if (elevenLabsEnabled) {
+    return "elevenlabs";
+  }
+
   if (isBrowserTtsAvailable()) {
     return "browser";
   }
@@ -76,7 +97,7 @@ export function stopAll(): void {
   }
   activeUtterance = null;
 
-  // Stop server audio
+  // Stop server audio (works for both OpenAI and ElevenLabs)
   if (activeAudio) {
     activeAudio.pause();
     activeAudio.src = "";
@@ -111,10 +132,20 @@ function speakWithBrowserTts(
       : 1;
     activeUtterance = utterance;
 
+    utterance.onstart = () => {
+      emitAvatarEvent("eva:tts-start", { mode: "browser" });
+    };
+
+    // Word boundary events drive lip sync simulation
+    utterance.onboundary = () => {
+      emitAvatarEvent("eva:tts-word-boundary");
+    };
+
     utterance.onend = () => {
       if (requestId === currentRequestId) {
         activeUtterance = null;
       }
+      emitAvatarEvent("eva:tts-end");
       resolve();
     };
 
@@ -122,6 +153,7 @@ function speakWithBrowserTts(
       if (requestId === currentRequestId) {
         activeUtterance = null;
       }
+      emitAvatarEvent("eva:tts-end");
       reject(new Error(`Browser TTS error: ${event.error ?? "unknown"}`));
     };
 
@@ -130,24 +162,29 @@ function speakWithBrowserTts(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Server TTS                                                         */
+/*  Server TTS (OpenAI or ElevenLabs — both go through /api/tts)       */
 /* ------------------------------------------------------------------ */
 
-async function speakWithServerTts(
+async function speakWithServerProvider(
   text: string,
   requestId: number,
+  provider: "openai" | "elevenlabs",
 ): Promise<void> {
   const response = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, voiceId: "alloy" }),
+    body: JSON.stringify({
+      text,
+      provider,
+      ...(provider === "openai" ? { voiceId: "alloy" } : {}),
+    }),
   });
 
   if (!response.ok) {
     const data = (await response.json().catch(() => ({ error: "Server TTS request failed." }))) as {
       error?: string;
     };
-    throw new Error(data.error || "Server TTS request failed.");
+    throw new Error(data.error || `${provider} TTS request failed.`);
   }
 
   const audioBlob = await response.blob();
@@ -164,18 +201,24 @@ async function speakWithServerTts(
   activeAudio = audio;
 
   return new Promise<void>((resolve, reject) => {
+    // Emit TTS start with audio element reference for lip sync
+    emitAvatarEvent("eva:tts-start", { mode: provider === "elevenlabs" ? "server" : "server", audio });
+
     audio.onended = () => {
       cleanUpAudio(audio, objectUrl, requestId);
+      emitAvatarEvent("eva:tts-end");
       resolve();
     };
 
     audio.onerror = () => {
       cleanUpAudio(audio, objectUrl, requestId);
-      reject(new Error("Could not play server TTS audio."));
+      emitAvatarEvent("eva:tts-end");
+      reject(new Error(`Could not play ${provider} TTS audio.`));
     };
 
     audio.play().catch((err) => {
       cleanUpAudio(audio, objectUrl, requestId);
+      emitAvatarEvent("eva:tts-end");
       reject(err instanceof Error ? err : new Error("Audio playback failed."));
     });
   });
@@ -197,7 +240,12 @@ function cleanUpAudio(audio: HTMLAudioElement, objectUrl: string, requestId: num
 
 /**
  * Try to speak `text` using the user's preferred mode. If the preferred mode
- * is "browser" and it fails, automatically retry with server TTS (if enabled).
+ * fails, automatically try fallback providers.
+ *
+ * Fallback chain:
+ *   elevenlabs → server → browser
+ *   server     → browser
+ *   browser    → server (if enabled)
  *
  * Returns the mode that was ultimately used (useful for UI status display).
  */
@@ -206,6 +254,7 @@ export async function speakWithFallback(
   options: {
     preferredMode: TtsMode;
     serverTtsEnabled: boolean;
+    elevenLabsEnabled?: boolean;
     callbacks?: TtsCallbacks;
     behavior?: VoiceBehavior;
   },
@@ -219,6 +268,47 @@ export async function speakWithFallback(
   stopAll();
   const requestId = currentRequestId;
 
+  // ---- ElevenLabs-preferred path ----
+  if (preferredMode === "elevenlabs") {
+    callbacks?.onStatusChange?.("speaking-elevenlabs");
+    try {
+      await speakWithServerProvider(clean, requestId, "elevenlabs");
+      callbacks?.onStatusChange?.("idle");
+      return "elevenlabs";
+    } catch (err) {
+      // Fallback to server OpenAI if available
+      if (serverTtsEnabled) {
+        callbacks?.onStatusChange?.(
+          "fallback-activated",
+          "ElevenLabs failed — falling back to server TTS.",
+        );
+        try {
+          await speakWithServerProvider(clean, requestId, "openai");
+          callbacks?.onStatusChange?.("idle");
+          return "server";
+        } catch {
+          // Fall through to browser
+        }
+      }
+      // Fallback to browser
+      if (isBrowserTtsAvailable()) {
+        callbacks?.onStatusChange?.(
+          "fallback-activated",
+          "ElevenLabs failed — falling back to browser TTS.",
+        );
+        try {
+          await speakWithBrowserTts(clean, requestId, behavior);
+          callbacks?.onStatusChange?.("idle");
+          return "browser";
+        } catch {
+          // All failed
+        }
+      }
+      callbacks?.onStatusChange?.("error", err instanceof Error ? err.message : "ElevenLabs TTS failed.");
+      throw err;
+    }
+  }
+
   // ---- Server-preferred path ----
   if (preferredMode === "server") {
     if (!serverTtsEnabled) {
@@ -228,7 +318,7 @@ export async function speakWithFallback(
 
     callbacks?.onStatusChange?.("speaking-server");
     try {
-      await speakWithServerTts(clean, requestId);
+      await speakWithServerProvider(clean, requestId, "openai");
       callbacks?.onStatusChange?.("idle");
       return "server";
     } catch (err) {
@@ -251,7 +341,7 @@ export async function speakWithFallback(
         "Browser TTS failed — switching to server fallback.",
       );
       try {
-        await speakWithServerTts(clean, requestId);
+        await speakWithServerProvider(clean, requestId, "openai");
         callbacks?.onStatusChange?.("idle");
         return "server";
       } catch (serverError) {

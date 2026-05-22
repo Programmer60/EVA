@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const speechCreateMock = vi.fn();
-const openAiCtorMock = vi.fn(() => ({
+const openAiCtorMock = vi.fn((config?: unknown) => ({
   audio: {
     speech: {
       create: speechCreateMock,

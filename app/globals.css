@@ -209,21 +209,115 @@ body {
   font-size: 0.88rem;
 }
 
-.eva-avatar-shell {
-  margin-top: 0.9rem;
-  min-height: 150px;
-  border-radius: 0.9rem;
-  background: radial-gradient(circle at 40% 30%, rgba(131, 183, 255, 0.35), rgba(102, 227, 190, 0.1));
-  display: grid;
-  place-items: center;
+/* ── Avatar System ─────────────────────────────────────────── */
+
+.eva-avatar-card {
+  grid-column: span 12 !important;
 }
 
-.eva-avatar-orb {
-  width: 72px;
-  height: 72px;
+.eva-avatar-container {
+  margin-top: 0.9rem;
+  min-height: 220px;
+  border-radius: 0.9rem;
+  display: grid;
+  place-items: center;
+  position: relative;
+  overflow: hidden;
+  transition: background 1.2s ease;
+}
+
+.eva-face-wrapper {
+  width: 180px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: eva-float 6s ease-in-out infinite;
+}
+
+.eva-face-svg {
+  width: 100%;
+  height: 100%;
+  will-change: transform;
+  transition: transform 0.15s ease-out;
+}
+
+/* Presence indicator dot */
+.eva-presence-indicator {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem 0.2rem 1.1rem;
   border-radius: 999px;
-  background: radial-gradient(circle at 30% 30%, #c5ddff, var(--accent-2));
-  box-shadow: 0 0 24px rgba(131, 183, 255, 0.55);
+  background: rgba(102, 227, 190, 0.15);
+  color: var(--accent);
+  text-transform: capitalize;
+  position: relative;
+}
+
+.eva-presence-indicator::before {
+  content: "";
+  position: absolute;
+  left: 0.45rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: eva-presence-pulse 2s ease-in-out infinite;
+}
+
+.eva-presence-indicator[data-state="thinking"]::before {
+  background: var(--accent-2);
+  animation: eva-presence-pulse 1.4s ease-in-out infinite;
+}
+
+.eva-presence-indicator[data-state="speaking"]::before {
+  background: var(--accent);
+  animation: eva-presence-pulse 0.8s ease-in-out infinite;
+}
+
+.eva-presence-indicator[data-state="emotional_pause"]::before {
+  background: var(--muted);
+  animation: none;
+  opacity: 0.6;
+}
+
+@keyframes eva-presence-pulse {
+  0%, 100% { opacity: 0.4; transform: translateY(-50%) scale(1); }
+  50% { opacity: 1; transform: translateY(-50%) scale(1.2); }
+}
+
+/* Thinking state: subtle ambient pulse */
+.eva-avatar-thinking {
+  animation: eva-thinking-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes eva-thinking-glow {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.08); }
+}
+
+/* Speaking: subtle container brightness boost */
+.eva-avatar-speaking {
+  filter: brightness(1.06);
+  transition: filter 0.8s ease;
+}
+
+/* Speaking glow on the SVG ambient circle — very subtle pulse */
+.eva-speaking-glow {
+  animation: eva-speaking-pulse 2s ease-in-out infinite;
+}
+
+@keyframes eva-speaking-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+/* Gentle floating idle animation */
+@keyframes eva-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
 }
 
 .eva-list {
@@ -245,6 +339,78 @@ body {
 .eva-architecture h2 {
   color: var(--foreground);
   margin-top: 0;
+}
+
+.eva-dashboard-grid {
+  margin-top: 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.eva-metric-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.eva-metric-card h2 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.eva-metric-card strong {
+  font-size: clamp(1.3rem, 4vw, 1.75rem);
+  line-height: 1;
+}
+
+.eva-metric-card span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.eva-dashboard-page {
+  max-width: 1240px;
+}
+
+.eva-dashboard-stack {
+  margin-top: 1.5rem;
+}
+
+.eva-quick-debug {
+  margin-bottom: 0.25rem;
+}
+
+.eva-profile-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.eva-table-wrap {
+  overflow-x: auto;
+  margin-top: 0.9rem;
+}
+
+.eva-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.eva-table th,
+.eva-table td {
+  padding: 0.65rem 0.7rem;
+  border-bottom: 1px solid rgba(157, 177, 206, 0.16);
+  text-align: left;
+  color: var(--foreground);
+}
+
+.eva-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* ── chat enhancements ──────────────────────────────────── */
@@ -391,14 +557,33 @@ body {
 }
 
 @media (min-width: 820px) {
-  .eva-grid > :nth-child(1),
-  .eva-grid > :nth-child(2) {
-    grid-column: span 6;
+  /* Avatar: full width on top */
+  .eva-avatar-card {
+    grid-column: span 12 !important;
   }
 
-  .eva-grid > :nth-child(3),
+  /* Chat panel: takes 7 columns */
+  .eva-grid > :nth-child(2) {
+    grid-column: span 7;
+  }
+
+  /* Voice panel: takes 5 columns */
+  .eva-grid > :nth-child(3) {
+    grid-column: span 5;
+  }
+
+  /* System status: full width */
   .eva-grid > :nth-child(4) {
-    grid-column: span 6;
+    grid-column: span 12;
+  }
+
+  .eva-avatar-container {
+    min-height: 260px;
+  }
+
+  .eva-face-wrapper {
+    width: 200px;
+    height: 240px;
   }
 }
 

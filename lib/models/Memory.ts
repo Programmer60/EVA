@@ -30,6 +30,14 @@ const memorySchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  memoryMentionCount: {
+    type: Number,
+    default: 0,
+  },
+  lastMentionedAt: {
+    type: Date,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,

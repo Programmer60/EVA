@@ -25,6 +25,7 @@ type ChatApiResponse = {
     memoryCandidatesCount: number;
     memoryKeysUsed: string[];
     providerUsed: "gemini" | "openrouter" | null;
+    bondScore?: number;
   };
   behavior?: {
     speechRate: number;
@@ -39,16 +40,32 @@ type HistoryApiResponse = {
 };
 
 type MemoryDebugEntry = {
+  id: string;
   key: string;
   value: string;
   importance: number;
   source: string;
   lastAccessed: string | null;
+  memoryMentionCount?: number;
+  lastMentionedAt?: string | null;
 };
 
 type MemoryDebugResponse = {
   userId: string;
   count: number;
+  profile?: {
+    userId: string;
+    bondTier: string;
+    bondScore: number;
+    dominantEmotion: string;
+    dominantReplyMode: string;
+    dominantTone: string;
+    activeArcs: number;
+    recurringTopics: string[];
+    recentMemories: string[];
+    observedPatterns: string[];
+    summary: string;
+  } | null;
   memories: MemoryDebugEntry[];
 };
 
@@ -72,9 +89,20 @@ function getOrCreateUserId(): string {
     return existing;
   }
 
-  const created = `user-${Math.random().toString(36).slice(2, 10)}`;
+  const created = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? `user-${crypto.randomUUID()}`
+    : `user-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
   window.localStorage.setItem(USER_ID_STORAGE_KEY, created);
   return created;
+}
+
+function formatProfileNameFromUserId(userId: string): string {
+  if (!userId || userId === "anonymous") {
+    return "Anonymous";
+  }
+
+  const userPrefixMatch = userId.match(/^user-(.+)$/i);
+  return userPrefixMatch?.[1] ?? userId;
 }
 
 export function ChatPanel() {
@@ -91,7 +119,9 @@ export function ChatPanel() {
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [currentEmotion, setCurrentEmotion] = useState<string>("neutral");
   const [userId, setUserId] = useState<string>("anonymous");
+  const [profileName, setProfileName] = useState<string>("Anonymous");
   const [memoryFacts, setMemoryFacts] = useState<MemoryDebugEntry[]>([]);
+  const [memoryProfile, setMemoryProfile] = useState<MemoryDebugResponse["profile"]>(null);
   const [lastContextDebug, setLastContextDebug] = useState<ChatApiResponse["contextDebug"]>();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatBoxRef = useRef<HTMLDivElement>(null);
@@ -179,6 +209,7 @@ export function ChatPanel() {
   useEffect(() => {
     const uid = getOrCreateUserId();
     setUserId(uid);
+    setProfileName(formatProfileNameFromUserId(uid));
 
     async function loadHistory() {
       try {
@@ -251,7 +282,7 @@ export function ChatPanel() {
 
       try {
         const response = await fetch(
-          `/api/memory?userId=${encodeURIComponent(userId)}&limit=30`,
+          `/api/memory?userId=${encodeURIComponent(userId)}&limit=30&includeProfile=true`,
         );
         const data = (await response.json()) as MemoryDebugResponse | { error?: string };
 
@@ -261,6 +292,7 @@ export function ChatPanel() {
         }
 
         setMemoryFacts(data.memories);
+        setMemoryProfile("profile" in data ? data.profile ?? null : null);
       } catch (memoryError) {
         const messageText =
           memoryError instanceof Error ? memoryError.message : "Could not load memory debug.";
@@ -301,6 +333,7 @@ export function ChatPanel() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, userId }),
+        signal: AbortSignal.timeout(45000), // 45 second timeout
       });
 
       const data = (await response.json()) as ChatApiResponse | { error?: string };
@@ -321,6 +354,7 @@ export function ChatPanel() {
       // ── PRESENCE LAYER: THINKING Phase ──
       const thinkDelay = getTypingDelay(replyText, replyEmotion);
       setPresencePhase("thinking");
+      emitPresenceChange("thinking");
 
       const abortController = new AbortController();
       streamAbortRef.current = abortController;
@@ -330,6 +364,7 @@ export function ChatPanel() {
       } catch {
         // Interrupted during thinking — flush instantly
         setPresencePhase("idle");
+        emitPresenceChange("idle");
         setStreamingContent("");
         setMessages((prev) => [
           ...prev,
@@ -347,6 +382,7 @@ export function ChatPanel() {
 
       // ── PRESENCE LAYER: STREAMING Phase ──
       setPresencePhase("streaming");
+      emitPresenceChange("streaming");
       const chunks = chunkReply(replyText, replyEmotion);
       let accumulated = "";
 
@@ -370,6 +406,7 @@ export function ChatPanel() {
       // Streaming complete (or interrupted) — commit final message
       setStreamingContent("");
       setPresencePhase("idle");
+      emitPresenceChange("idle");
       streamAbortRef.current = null;
 
       setMessages((prev) => [
@@ -412,6 +449,15 @@ export function ChatPanel() {
         new CustomEvent("eva:assistant-reply", {
           detail: { reply, emotion, behavior },
         }),
+      );
+    }
+  }
+
+  // Helper: emit presence phase changes for avatar
+  function emitPresenceChange(phase: string) {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("eva:presence-change", { detail: { phase } }),
       );
     }
   }
@@ -694,7 +740,19 @@ export function ChatPanel() {
             </div>
           </div>
 
-          <p className="eva-note">User: {userId}</p>
+          <p className="eva-note">User ID: {userId}</p>
+          <p className="eva-note">Profile Name: {profileName}</p>
+          <p className="eva-note">Memories: {memoryFacts.length}</p>
+          <p className="eva-note">Bond Score: {lastContextDebug?.bondScore ?? "n/a"}</p>
+
+          {memoryProfile && (
+            <div className="eva-profile-panel">
+              <p className="eva-note">Current profile: {memoryProfile.summary}</p>
+              <p className="eva-note">
+                Mood: {memoryProfile.dominantEmotion} | Mode: {memoryProfile.dominantReplyMode} | Tone: {memoryProfile.dominantTone}
+              </p>
+            </div>
+          )}
 
           {lastContextDebug && (
             <p className="eva-note">
@@ -721,6 +779,12 @@ export function ChatPanel() {
                   <span className="eva-pill">{item.source}</span>
                   {" "}
                   <span className="eva-pill">importance {item.importance}</span>
+                  {item.memoryMentionCount !== undefined && (
+                    <>
+                      {" "}
+                      <span className="eva-pill">mentions {item.memoryMentionCount}</span>
+                    </>
+                  )}
                 </p>
               ))}
             </div>

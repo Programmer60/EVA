@@ -60,6 +60,7 @@ export function VoicePanel() {
   const MAX_NETWORK_RETRIES = 1;
   const serverSttEnabled = process.env.NEXT_PUBLIC_ENABLE_SERVER_STT === "true";
   const serverTtsEnabled = process.env.NEXT_PUBLIC_ENABLE_SERVER_TTS === "true";
+  const elevenLabsEnabled = process.env.NEXT_PUBLIC_ENABLE_ELEVENLABS === "true";
   const [isListening, setIsListening] = useState(false);
   const [isServerRecording, setIsServerRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -101,15 +102,22 @@ export function VoicePanel() {
 
   // Auto-detect best TTS mode on mount
   useEffect(() => {
-    const best = detectBestTtsMode(serverTtsEnabled);
-    if (best === "server" && !speechSynthesisSupported) {
+    const best = detectBestTtsMode(serverTtsEnabled, elevenLabsEnabled);
+    if (best === "elevenlabs") {
+      setTtsMode("elevenlabs");
+      setAutoDetectedMode(true);
+    } else if (best === "server" && !speechSynthesisSupported) {
       setTtsMode("server");
       setAutoDetectedMode(true);
     }
-  }, [serverTtsEnabled, speechSynthesisSupported]);
+  }, [serverTtsEnabled, elevenLabsEnabled, speechSynthesisSupported]);
 
   const canPlayReply =
-    Boolean(lastReply) && (ttsMode === "browser" ? speechSynthesisSupported : serverTtsEnabled);
+    Boolean(lastReply) && (
+      ttsMode === "browser" ? speechSynthesisSupported :
+      ttsMode === "elevenlabs" ? elevenLabsEnabled :
+      serverTtsEnabled
+    );
 
   const ttsCallbacks = useCallback(() => ({
     onStatusChange: (status: TtsFallbackStatus, detail?: string) => {
@@ -144,6 +152,7 @@ export function VoicePanel() {
     speakWithFallback(text, {
       preferredMode: ttsMode,
       serverTtsEnabled,
+      elevenLabsEnabled,
       callbacks: ttsCallbacks(),
       behavior,
     }).catch((err) => {
@@ -151,7 +160,7 @@ export function VoicePanel() {
       setVoiceError(message);
       setIsSpeaking(false);
     });
-  }, [ttsMode, serverTtsEnabled, ttsCallbacks]);
+  }, [ttsMode, serverTtsEnabled, elevenLabsEnabled, ttsCallbacks]);
 
   function sendTranscriptDraftToChat(message: string): void {
     if (typeof window === "undefined" || !message.trim()) {
@@ -494,7 +503,7 @@ export function VoicePanel() {
         <span className="eva-pill">STT + TTS v1</span>
       </div>
 
-      <div className="eva-row" style={{ marginTop: "0.8rem", justifyContent: "flex-start" }}>
+      <div className="eva-row" style={{ marginTop: "0.8rem", justifyContent: "flex-start", flexWrap: "wrap", gap: "0.3rem 0.8rem" }}>
         <label className="eva-chat-label" style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
           <input
             type="radio"
@@ -514,7 +523,18 @@ export function VoicePanel() {
             onChange={() => { setTtsMode("server"); setAutoDetectedMode(false); }}
             disabled={!serverTtsEnabled}
           />
-          Server TTS Fallback
+          Server TTS
+        </label>
+        <label className="eva-chat-label" style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
+          <input
+            type="radio"
+            name="eva-tts-mode"
+            value="elevenlabs"
+            checked={ttsMode === "elevenlabs"}
+            onChange={() => { setTtsMode("elevenlabs"); setAutoDetectedMode(false); }}
+            disabled={!elevenLabsEnabled}
+          />
+          🎙️ ElevenLabs
         </label>
       </div>
 
@@ -615,7 +635,11 @@ export function VoicePanel() {
       )}
 
       {serverTtsEnabled && ttsMode === "server" && !autoDetectedMode && (
-        <p className="eva-note">Server TTS fallback is enabled for reply playback.</p>
+        <p className="eva-note">Server TTS (OpenAI) is enabled for reply playback.</p>
+      )}
+
+      {ttsMode === "elevenlabs" && (
+        <p className="eva-note">🎙️ ElevenLabs voice active — premium natural speech.</p>
       )}
 
       {!speechRecognitionSupported && (
