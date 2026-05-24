@@ -149,11 +149,11 @@ export const PRESENCE_EYE_MOD: Record<AvatarPresenceState, number> = {
 
 /** Blink timing per presence state */
 export const PRESENCE_BLINK: Record<AvatarPresenceState, BlinkConfig> = {
-  idle:             { minInterval: 3000, maxInterval: 6000, duration: 150 },
-  listening:        { minInterval: 3500, maxInterval: 5500, duration: 140 },
-  thinking:         { minInterval: 5000, maxInterval: 8000, duration: 200 },  // noticeably slower
-  speaking:         { minInterval: 2800, maxInterval: 5000, duration: 130 },
-  emotional_pause:  { minInterval: 4500, maxInterval: 7500, duration: 180 },
+  idle:             { minInterval: 1500, maxInterval: 4000, duration: 150 },
+  listening:        { minInterval: 2000, maxInterval: 4500, duration: 140 },
+  thinking:         { minInterval: 3000, maxInterval: 6000, duration: 200 },  // noticeably slower
+  speaking:         { minInterval: 1800, maxInterval: 3500, duration: 130 },
+  emotional_pause:  { minInterval: 2500, maxInterval: 5000, duration: 180 },
 };
 
 /**

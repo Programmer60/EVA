@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { EvaFace } from "./EvaFace";
+import dynamic from "next/dynamic";
 import {
   type AvatarExpression,
   type AvatarPresenceState,
@@ -35,6 +36,7 @@ const IDLE_TIMEOUT = 25000;
 export function AvatarPanel() {
   /* ── State ──────────────────────────────────────────────── */
   const [presenceState, setPresenceState] = useState<AvatarPresenceState>("idle");
+  const [currentEmotion, setCurrentEmotion] = useState("neutral");
 
   /* ── Refs for animation loop (avoid React re-renders per frame) ── */
   const currentExprRef = useRef<AvatarExpression>(getExpressionForEmotion("neutral"));
@@ -48,7 +50,7 @@ export function AvatarPanel() {
   const blinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastActivityRef = useRef(Date.now());
+  const lastActivityRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   /* ── Cursor gaze tracking ───────────────────────────────── */
@@ -114,7 +116,7 @@ export function AvatarPanel() {
 
   /* ── Blink Scheduler ────────────────────────────────────── */
 
-  const scheduleBlink = useCallback(() => {
+  function scheduleBlink() {
     if (blinkTimerRef.current) clearTimeout(blinkTimerRef.current);
 
     const interval = getNextBlinkInterval(presenceRef.current);
@@ -129,7 +131,7 @@ export function AvatarPanel() {
         scheduleBlink();
       }, duration);
     }, interval);
-  }, []);
+  }
 
   /* ── Cursor Tracking (mousemove → normalized gaze) ──────── */
 
@@ -180,6 +182,7 @@ export function AvatarPanel() {
         emotion?: string;
       } | undefined;
       const newEmotion = detail?.emotion ?? "neutral";
+      setCurrentEmotion(newEmotion);
       targetExprRef.current = getExpressionForEmotion(newEmotion);
       setAmbientGlow(EMOTION_GLOW[newEmotion] ?? EMOTION_GLOW.neutral);
     }
@@ -340,23 +343,43 @@ export function AvatarPanel() {
 
       <div
         ref={containerRef}
-        className={`eva-avatar-container ${presenceState === "thinking" ? "eva-avatar-thinking" : ""} ${isSpeakingRef.current ? "eva-avatar-speaking" : ""}`}
+        className={`eva-avatar-container ${presenceState === "thinking" ? "eva-avatar-thinking" : ""} ${renderedSpeaking ? "eva-avatar-speaking" : ""}`}
         style={{
           background: `radial-gradient(circle at 50% 45%, ${ambientGlow}, transparent 70%)`,
         }}
       >
         <div className="eva-face-wrapper">
-          <EvaFace
-            expression={renderedExpr}
-            gaze={renderedGaze}
-            isBlinking={renderedBlink}
-            isSpeaking={renderedSpeaking}
-            breatheScale={renderedBreathe}
-            browDrift={renderedBrowDrift}
-            headDrift={renderedHeadDrift}
-          />
+          <Suspense
+            fallback={
+              <EvaFace
+                expression={renderedExpr}
+                gaze={renderedGaze}
+                isBlinking={renderedBlink}
+                isSpeaking={renderedSpeaking}
+                breatheScale={renderedBreathe}
+                browDrift={renderedBrowDrift}
+                headDrift={renderedHeadDrift}
+              />
+            }
+          >
+            {/* Dynamically load the 3D avatar canvas (client-only) */}
+            {/** Use top-level dynamic import to avoid server/client mismatch */}
+            <DynamicAvatarCanvas
+              emotion={currentEmotion}
+              expression={renderedExpr}
+              gaze={renderedGaze}
+              isBlinking={renderedBlink}
+              isSpeaking={renderedSpeaking}
+              breatheScale={renderedBreathe}
+              browDrift={renderedBrowDrift}
+              headDrift={renderedHeadDrift}
+            />
+          </Suspense>
         </div>
       </div>
     </section>
   );
 }
+
+// Top-level dynamic import to prevent SSR from loading three.js on the server
+const DynamicAvatarCanvas = dynamic(() => import("./AvatarCanvas"), { ssr: false })
