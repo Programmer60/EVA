@@ -1,5 +1,6 @@
 "use client";
 
+import { initSharedAudioContext } from "@/lib/avatar/lipSyncAnalyzer";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { getTypingDelay, chunkReply, presenceSleep } from "@/lib/presence/presenceEngine";
 
@@ -488,6 +489,7 @@ export function ChatPanel() {
     }
 
     window.addEventListener("eva:voice-draft", onVoiceDraft as EventListener);
+    
     return () => {
       window.removeEventListener("eva:voice-draft", onVoiceDraft as EventListener);
     };
@@ -502,11 +504,15 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setInput("");
 
+    // Initialize audio context immediately during user click gesture
+    initSharedAudioContext();
+
     await fetchAssistantReply(message);
   }
 
   async function retryLastMessage(): Promise<void> {
     if (!failedMessage || isLoading) return;
+    initSharedAudioContext();
     await fetchAssistantReply(failedMessage);
   }
 

@@ -10,6 +10,7 @@ import {
   type TtsMode,
   type VoiceBehavior,
 } from "@/lib/audio/ttsManager";
+import { initSharedAudioContext } from "@/lib/avatar/lipSyncAnalyzer";
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -60,10 +61,10 @@ export function VoicePanel() {
   const MAX_NETWORK_RETRIES = 1;
   const serverSttEnabled = process.env.NEXT_PUBLIC_ENABLE_SERVER_STT === "true";
   const serverTtsEnabled = process.env.NEXT_PUBLIC_ENABLE_SERVER_TTS === "true";
-  const elevenLabsEnabled = process.env.NEXT_PUBLIC_ENABLE_ELEVENLABS === "true";
   const [isListening, setIsListening] = useState(false);
   const [isServerRecording, setIsServerRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [googleEnabled, setGoogleEnabled] = useState(true);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [ttsMode, setTtsMode] = useState<TtsMode>("browser");
   const [ttsFallbackStatus, setTtsFallbackStatus] = useState<TtsFallbackStatus>("idle");
@@ -102,20 +103,20 @@ export function VoicePanel() {
 
   // Auto-detect best TTS mode on mount
   useEffect(() => {
-    const best = detectBestTtsMode(serverTtsEnabled, elevenLabsEnabled);
-    if (best === "elevenlabs") {
-      setTtsMode("elevenlabs");
+    const best = detectBestTtsMode(serverTtsEnabled, googleEnabled);
+    if (best === "google") {
+      setTtsMode("google");
       setAutoDetectedMode(true);
     } else if (best === "server" && !speechSynthesisSupported) {
       setTtsMode("server");
       setAutoDetectedMode(true);
     }
-  }, [serverTtsEnabled, elevenLabsEnabled, speechSynthesisSupported]);
+  }, [serverTtsEnabled, googleEnabled, speechSynthesisSupported]);
 
   const canPlayReply =
     Boolean(lastReply) && (
       ttsMode === "browser" ? speechSynthesisSupported :
-      ttsMode === "elevenlabs" ? elevenLabsEnabled :
+      ttsMode === "google" ? googleEnabled :
       serverTtsEnabled
     );
 
@@ -148,19 +149,27 @@ export function VoicePanel() {
 
     setVoiceError(null);
     setTtsFallbackDetail(null);
+    
+    // CRITICAL FIX: Initialize AudioContext synchronously during this exact user gesture, 
+    // so it doesn't get suspended by the browser while waiting 11+ seconds for the TTS fetch.
+    initSharedAudioContext();
 
     speakWithFallback(text, {
       preferredMode: ttsMode,
       serverTtsEnabled,
-      elevenLabsEnabled,
+      googleEnabled: true,
       callbacks: ttsCallbacks(),
       behavior,
     }).catch((err) => {
       const message = err instanceof Error ? err.message : "TTS playback failed.";
       setVoiceError(message);
       setIsSpeaking(false);
+      
+      // CRITICAL FIX: If TTS fails (e.g. 500 error, autoplay block), 
+      // we MUST manually broadcast tts-end so the avatar knows to stop moving her lips.
+      window.dispatchEvent(new CustomEvent("eva:tts-end"));
     });
-  }, [ttsMode, serverTtsEnabled, elevenLabsEnabled, ttsCallbacks]);
+  }, [ttsMode, serverTtsEnabled, googleEnabled, ttsCallbacks]);
 
   function sendTranscriptDraftToChat(message: string): void {
     if (typeof window === "undefined" || !message.trim()) {
@@ -529,12 +538,12 @@ export function VoicePanel() {
           <input
             type="radio"
             name="eva-tts-mode"
-            value="elevenlabs"
-            checked={ttsMode === "elevenlabs"}
-            onChange={() => { setTtsMode("elevenlabs"); setAutoDetectedMode(false); }}
-            disabled={!elevenLabsEnabled}
+            value="google"
+            checked={ttsMode === "google"}
+            onChange={() => { setTtsMode("google"); setAutoDetectedMode(false); }}
+            disabled={!googleEnabled}
           />
-          🎙️ ElevenLabs
+          🎙️ Google TTS
         </label>
       </div>
 
@@ -638,8 +647,8 @@ export function VoicePanel() {
         <p className="eva-note">Server TTS (OpenAI) is enabled for reply playback.</p>
       )}
 
-      {ttsMode === "elevenlabs" && (
-        <p className="eva-note">🎙️ ElevenLabs voice active — premium natural speech.</p>
+      {ttsMode === "google" && (
+        <p className="eva-note">🎙️ Google Cloud TTS active — premium natural speech.</p>
       )}
 
       {!speechRecognitionSupported && (

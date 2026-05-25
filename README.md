@@ -19,6 +19,17 @@ Template for future entries:
 	- ...
 ```
 
+### 2026-05-25
+
+- Critical Fix: Audio Pipeline Autoplay Block & Ghost Connections:
+	- Abandoned HTML `<audio>` elements for server TTS due to aggressive 5-second Autoplay timeout policies in modern browsers.
+	- Rewrote `LipSyncAnalyzer.ts` to use the pure Web Audio API `AudioBufferSourceNode` paradigm, decoding Base64 MP3 strings directly in memory space.
+	- Solved the "Cannot close a closed AudioContext" and "HTMLMediaElement already connected" InvalidState errors by maintaining a single, global `sharedAudioContext`.
+	- Added `sharedAudioContext.resume()` explicitly during the user's synchronous click gesture (`onSubmit`), preventing the context from remaining suspended when the 11-second TTS network payload finally arrives.
+	- Fixed overlapping audio streams by explicitly calling `try { this.source.stop(); }` on the old `AudioBufferSourceNode` when disconnecting, preventing background playback from triggering premature `eva:tts-end` events.
+	- Increased RMS amplitude sensitivity (multiplier from 3.5x to 5.0x + baseline threshold) in `LipSyncAnalyzer` to prevent the lips from closing prematurely when Google's "Journey" voice drops to a quiet, breathy whisper at the end of sentences.
+	- Fixed a massive React lifecycle race condition in `AvatarPanel.tsx` where the blink-scheduler `useEffect` was inadvertently tearing down the `LipSyncAnalyzer` mid-decode whenever the UI state switched to "speaking". Segregated lip-sync disconnect into an unmount-only hook, resolving random `TypeError: Cannot read properties of null (reading 'createBufferSource')` crashes.
+
 ### 2026-03-22
 
 - Completed Step 1: introduced Vitest baseline and API tests for chat/memory routes.

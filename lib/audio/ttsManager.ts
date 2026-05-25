@@ -4,7 +4,7 @@
  * Supports three modes:
  *   - "browser"     — Free, uses native speechSynthesis
  *   - "server"      — OpenAI TTS via /api/tts
- *   - "elevenlabs"  — ElevenLabs TTS via /api/tts (premium, natural voice)
+ *   - "google"      — Google Cloud TTS via /api/tts (premium, Journey voice)
  *
  * Usage (from a React component or any client module):
  *   import { detectBestTtsMode, speakWithFallback, stopAll } from "@/lib/audio/ttsManager";
@@ -14,13 +14,13 @@
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-export type TtsMode = "browser" | "server" | "elevenlabs";
+export type TtsMode = "browser" | "server" | "google";
 
 export type TtsFallbackStatus =
   | "idle"
   | "speaking-browser"
   | "speaking-server"
-  | "speaking-elevenlabs"
+  | "speaking-google"
   | "fallback-activated"
   | "error";
 
@@ -71,10 +71,10 @@ export function isBrowserTtsAvailable(): boolean {
  */
 export function detectBestTtsMode(
   serverTtsEnabled: boolean,
-  elevenLabsEnabled?: boolean,
+  googleEnabled?: boolean,
 ): TtsMode {
-  if (elevenLabsEnabled) {
-    return "elevenlabs";
+  if (googleEnabled) {
+    return "google";
   }
 
   if (isBrowserTtsAvailable()) {
@@ -168,7 +168,7 @@ function speakWithBrowserTts(
 async function speakWithServerProvider(
   text: string,
   requestId: number,
-  provider: "openai" | "elevenlabs",
+  provider: "openai" | "google",
 ): Promise<void> {
   const response = await fetch("/api/tts", {
     method: "POST",
@@ -187,45 +187,38 @@ async function speakWithServerProvider(
     throw new Error(data.error || `${provider} TTS request failed.`);
   }
 
-  const audioBlob = await response.blob();
+  const data = await response.json() as { audioContent?: string };
 
   // Check if this request was cancelled while waiting for the network response
   if (requestId !== currentRequestId) {
     return;
   }
 
-  const objectUrl = URL.createObjectURL(audioBlob);
-  activeObjectUrl = objectUrl;
+  if (!data.audioContent) {
+    throw new Error(`Invalid response format from ${provider} TTS.`);
+  }
 
-  const audio = new Audio(objectUrl);
-  activeAudio = audio;
+  activeObjectUrl = null; // We are no longer using Object URLs
+  activeAudio = null;
 
   return new Promise<void>((resolve, reject) => {
-    // Emit TTS start with audio element reference for lip sync
-    emitAvatarEvent("eva:tts-start", { mode: provider === "elevenlabs" ? "server" : "server", audio });
-
-    audio.onended = () => {
-      cleanUpAudio(audio, objectUrl, requestId);
-      emitAvatarEvent("eva:tts-end");
+    // Listen for the tts-end event that LipSyncAnalyzer will dispatch when playback finishes
+    const onEnd = () => {
+      window.removeEventListener("eva:tts-end", onEnd);
       resolve();
     };
+    window.addEventListener("eva:tts-end", onEnd);
 
-    audio.onerror = () => {
-      cleanUpAudio(audio, objectUrl, requestId);
-      emitAvatarEvent("eva:tts-end");
-      reject(new Error(`Could not play ${provider} TTS audio.`));
-    };
-
-    audio.play().catch((err) => {
-      cleanUpAudio(audio, objectUrl, requestId);
-      emitAvatarEvent("eva:tts-end");
-      reject(err instanceof Error ? err : new Error("Audio playback failed."));
+    // Emit TTS start with the raw base64 string for the analyzer to decode and play
+    emitAvatarEvent("eva:tts-start", { 
+      mode: provider === "google" ? "server" : "server", 
+      base64Audio: data.audioContent 
     });
   });
 }
 
-function cleanUpAudio(audio: HTMLAudioElement, objectUrl: string, requestId: number): void {
-  if (activeObjectUrl === objectUrl) {
+function cleanUpAudio(audio: HTMLAudioElement | null, objectUrl: string, requestId: number): void {
+  if (activeObjectUrl === objectUrl && objectUrl) {
     URL.revokeObjectURL(objectUrl);
     activeObjectUrl = null;
   }
@@ -243,7 +236,7 @@ function cleanUpAudio(audio: HTMLAudioElement, objectUrl: string, requestId: num
  * fails, automatically try fallback providers.
  *
  * Fallback chain:
- *   elevenlabs → server → browser
+ *   google     → server → browser
  *   server     → browser
  *   browser    → server (if enabled)
  *
@@ -254,7 +247,7 @@ export async function speakWithFallback(
   options: {
     preferredMode: TtsMode;
     serverTtsEnabled: boolean;
-    elevenLabsEnabled?: boolean;
+    googleEnabled?: boolean;
     callbacks?: TtsCallbacks;
     behavior?: VoiceBehavior;
   },
@@ -268,19 +261,19 @@ export async function speakWithFallback(
   stopAll();
   const requestId = currentRequestId;
 
-  // ---- ElevenLabs-preferred path ----
-  if (preferredMode === "elevenlabs") {
-    callbacks?.onStatusChange?.("speaking-elevenlabs");
+  // ---- Google-preferred path ----
+  if (preferredMode === "google") {
+    callbacks?.onStatusChange?.("speaking-google");
     try {
-      await speakWithServerProvider(clean, requestId, "elevenlabs");
+      await speakWithServerProvider(clean, requestId, "google");
       callbacks?.onStatusChange?.("idle");
-      return "elevenlabs";
+      return "google";
     } catch (err) {
       // Fallback to server OpenAI if available
       if (serverTtsEnabled) {
         callbacks?.onStatusChange?.(
           "fallback-activated",
-          "ElevenLabs failed — falling back to server TTS.",
+          "Google Cloud TTS failed — falling back to server TTS.",
         );
         try {
           await speakWithServerProvider(clean, requestId, "openai");
@@ -294,7 +287,7 @@ export async function speakWithFallback(
       if (isBrowserTtsAvailable()) {
         callbacks?.onStatusChange?.(
           "fallback-activated",
-          "ElevenLabs failed — falling back to browser TTS.",
+          "Google Cloud TTS failed — falling back to browser TTS.",
         );
         try {
           await speakWithBrowserTts(clean, requestId, behavior);
@@ -304,7 +297,7 @@ export async function speakWithFallback(
           // All failed
         }
       }
-      callbacks?.onStatusChange?.("error", err instanceof Error ? err.message : "ElevenLabs TTS failed.");
+      callbacks?.onStatusChange?.("error", err instanceof Error ? err.message : "Google Cloud TTS failed.");
       throw err;
     }
   }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import textToSpeech from "@google-cloud/text-to-speech";
 import { AppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 
@@ -9,12 +10,14 @@ const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const DEFAULT_TTS_VOICE = "alloy";
 const MAX_TEXT_LENGTH = 1200;
 
-// ElevenLabs defaults
-const ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech";
-const DEFAULT_ELEVENLABS_VOICE_ID = "dVTC43YenSFAlcmsISI"; // "Dhara" — warm, emotional girlfriend voice (perfect for EVA)
-const DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2";
+// Google Cloud defaults
+const DEFAULT_GOOGLE_VOICE = "en-US-Journey-F";
+const DEFAULT_GOOGLE_LANG = "en-US";
 
 export const runtime = "nodejs";
+
+// Automatically uses your newly authenticated gcloud credentials
+const googleTtsClient = new textToSpeech.TextToSpeechClient();
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -22,52 +25,41 @@ type TtsPayload = {
   text?: string;
   voiceId?: string;
   model?: string;
-  provider?: "openai" | "elevenlabs";
+  provider?: "openai" | "google";
 };
 
-/* ── ElevenLabs TTS ──────────────────────────────────────── */
+/* ── Google Cloud TTS ──────────────────────────────────────── */
 
-async function generateElevenLabsTts(
+async function generateGoogleTts(
   text: string,
   voiceId: string,
-  modelId: string,
-  apiKey: string,
 ): Promise<Buffer> {
-  const url = `${ELEVENLABS_API_URL}/${voiceId}`;
+  try {
+    const requestPayload = {
+      input: { text: text },
+      voice: { languageCode: DEFAULT_GOOGLE_LANG, name: voiceId },
+      audioConfig: { audioEncoding: "MP3" as const },
+    };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "xi-api-key": apiKey,
-      "Content-Type": "application/json",
-      Accept: "audio/mpeg",
-    },
-    body: JSON.stringify({
-      text,
-      model_id: modelId,
-      voice_settings: {
-        stability: 0.5,          // balanced — not too robotic, not too variable
-        similarity_boost: 0.75,  // stay close to the chosen voice character
-        style: 0.3,              // subtle expressiveness — not dramatic
-        use_speaker_boost: true,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "Unknown error");
-    logger.error("ElevenLabs TTS request failed", {
-      status: response.status,
-      error: errorText.slice(0, 200),
+    const [response] = await googleTtsClient.synthesizeSpeech(requestPayload);
+    
+    if (!response.audioContent) {
+      throw new Error("No audio content returned from Google Cloud TTS.");
+    }
+    
+    // The SDK can return a base64 string or a Uint8Array depending on transport
+    if (typeof response.audioContent === "string") {
+      return Buffer.from(response.audioContent, "base64");
+    } else {
+      return Buffer.from(response.audioContent);
+    }
+    
+  } catch (error: any) {
+    logger.error("Google Cloud TTS failed", {
+      error: error.message || error,
     });
-    throw new AppError(
-      `ElevenLabs TTS failed: ${response.status} — ${errorText.slice(0, 100)}`,
-      502,
-    );
+    throw new AppError("Google Cloud TTS failed: " + (error.message || error), 500);
   }
-
-  const audioBuffer = Buffer.from(await response.arrayBuffer());
-  return audioBuffer;
 }
 
 /* ── OpenAI TTS ──────────────────────────────────────────── */
@@ -107,28 +99,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
     const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
 
-    let audioBuffer: Buffer;
+    let audioBase64: string;
     let providerUsed: string;
     let modelUsed: string;
     let voiceUsed: string;
 
-    if (requestedProvider === "elevenlabs") {
-      // ── ElevenLabs path ──
-      if (!elevenLabsApiKey) {
-        throw new AppError("Missing ELEVENLABS_API_KEY for ElevenLabs TTS.", 503);
-      }
-
+    if (requestedProvider === "google") {
+      // ── Google Cloud path ──
       voiceUsed = payload.voiceId?.trim() ||
-        process.env.ELEVENLABS_VOICE_ID?.trim() ||
-        DEFAULT_ELEVENLABS_VOICE_ID;
-      modelUsed = payload.model?.trim() ||
-        process.env.ELEVENLABS_MODEL?.trim() ||
-        DEFAULT_ELEVENLABS_MODEL;
+        process.env.GOOGLE_TTS_VOICE?.trim() ||
+        DEFAULT_GOOGLE_VOICE;
+      modelUsed = "journey";
 
-      logger.info("ElevenLabs TTS request", { voiceId: voiceUsed, model: modelUsed, textLength: text.length });
+      logger.info("Google Cloud TTS request", { voiceId: voiceUsed, textLength: text.length });
 
-      audioBuffer = await generateElevenLabsTts(text, voiceUsed, modelUsed, elevenLabsApiKey);
-      providerUsed = "elevenlabs";
+      const audioBuffer = await generateGoogleTts(text, voiceUsed);
+      audioBase64 = audioBuffer.toString("base64");
+      providerUsed = "google";
 
     } else {
       // ── OpenAI path (default) ──
@@ -145,22 +132,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       logger.info("OpenAI TTS request", { voice: voiceUsed, model: modelUsed, textLength: text.length });
 
-      audioBuffer = await generateOpenAiTts(text, voiceUsed, modelUsed, openAiApiKey);
+      const audioBuffer = await generateOpenAiTts(text, voiceUsed, modelUsed, openAiApiKey);
+      audioBase64 = audioBuffer.toString("base64");
       providerUsed = "openai";
     }
 
-    logger.info("TTS audio generated", { provider: providerUsed, bytes: audioBuffer.length });
+    logger.info("TTS audio generated", { provider: providerUsed, length: audioBase64.length });
 
-    return new NextResponse(new Uint8Array(audioBuffer), {
-      status: 200,
-      headers: {
-        "Content-Type": "audio/mpeg",
-        "Cache-Control": "no-store",
-        "X-Eva-Tts-Provider": providerUsed,
-        "X-Eva-Tts-Model": modelUsed,
-        "X-Eva-Tts-Voice": voiceUsed,
-      },
-    });
+    return NextResponse.json(
+      { audioContent: audioBase64 },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "X-Eva-Tts-Provider": providerUsed,
+          "X-Eva-Tts-Model": modelUsed,
+          "X-Eva-Tts-Voice": voiceUsed,
+        },
+      }
+    );
   } catch (error) {
     return toErrorResponse(error);
   }

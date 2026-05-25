@@ -200,7 +200,9 @@ export function AvatarPanel() {
         // Creates the "let me think about that" moment
         triggerSettlingBlink();
       } else if (phase === "streaming") {
-        setPresence("speaking");
+        // Do not set "speaking" here! We wait for eva:tts-start so lips sync with actual audio.
+        // Just maintain attentive/thinking posture while text streams on screen.
+        setPresence("thinking");
       } else if (phase === "idle") {
         // Only move to listening if we're not already in speaking (TTS might still be playing)
         if (!isSpeakingRef.current && presenceRef.current !== "emotional_pause") {
@@ -213,14 +215,14 @@ export function AvatarPanel() {
     function onTtsStart(event: Event) {
       const detail = (event as CustomEvent).detail as {
         mode?: string;
-        audio?: HTMLAudioElement;
+        base64Audio?: string;
       } | undefined;
 
       isSpeakingRef.current = true;
       setPresence("speaking");
 
-      if (detail?.mode === "server" && detail.audio) {
-        lipSyncRef.current.connectToAudioElement(detail.audio);
+      if (detail?.mode === "server" && detail.base64Audio) {
+        lipSyncRef.current.playAudioBase64(detail.base64Audio).catch(() => {});
       } else {
         lipSyncRef.current.startSimulation();
       }
@@ -318,9 +320,15 @@ export function AvatarPanel() {
       if (blinkTimerRef.current) clearTimeout(blinkTimerRef.current);
       if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-      lipSyncRef.current.disconnect();
     };
   }, [scheduleBlink]);
+
+  // Clean up LipSyncAnalyzer ONLY on unmount
+  useEffect(() => {
+    return () => {
+      lipSyncRef.current.disconnect();
+    };
+  }, []);
 
   /* ── Presence label for UI ──────────────────────────────── */
   // Only show behavioral state. No emotion labels — face + glow communicate that.
