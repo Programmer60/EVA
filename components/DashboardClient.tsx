@@ -212,20 +212,20 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
         </header>
 
         {/* Main Content - Avatar as the hero */}
-        <div className="flex-1 flex flex-col lg:flex-row gap-6 px-4 lg:px-8 pb-6 min-h-0">
+        <div className="flex-1 flex flex-col lg:flex-row gap-2 lg:gap-6 px-2 sm:px-4 lg:px-8 pb-2 sm:pb-6 min-h-0">
           
           {/* Left/Main: Avatar Area - Takes up most space */}
-          <div className="flex-1 flex flex-col items-center justify-center min-h-112.5 lg:min-h-0">
+          <div className="shrink-0 lg:flex-1 flex flex-col items-center justify-center min-h-0">
             
             {/* The 3D VRM Avatar */}
-            <div className="relative flex-1 flex flex-col items-center justify-center w-full py-8">
+            <div className="relative flex-1 flex flex-col items-center justify-center w-full py-2 lg:py-8">
               <AvatarPanel />
-              <p className="mt-4 text-center text-muted-foreground/60 font-serif italic">
+              <p className="mt-2 lg:mt-4 text-center text-sm lg:text-base text-muted-foreground/60 font-serif italic">
                 {stateMessages[evaState]}
               </p>
               
-              {/* Compact status chips below avatar */}
-              <div className="mt-6 z-10 relative">
+              {/* Compact status chips below avatar - hidden on very small screens to save vertical space */}
+              <div className="mt-2 lg:mt-6 z-10 relative hidden md:block">
                 <StatusChips
                   bond={profile?.bondTier ?? "new"}
                   mood={profile?.dominantEmotion ?? analytics?.dominantEmotion ?? "peaceful"}

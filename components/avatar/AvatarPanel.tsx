@@ -343,7 +343,7 @@ export function AvatarPanel() {
   return (
     <div
       ref={containerRef}
-      className={`relative w-full h-[650px] min-h-[600px] flex items-center justify-center transition-all duration-700 ${presenceState === "thinking" ? "scale-95 opacity-80" : ""} ${renderedSpeaking ? "scale-105" : ""}`}
+      className={`relative w-full h-[45vh] min-h-[350px] lg:h-[650px] lg:min-h-[600px] flex items-center justify-center transition-all duration-700 ${presenceState === "thinking" ? "scale-95 opacity-80" : ""} ${renderedSpeaking ? "scale-105" : ""}`}
       style={{
         background: `radial-gradient(circle at 50% 50%, ${ambientGlow}, transparent 70%)`,
       }}
