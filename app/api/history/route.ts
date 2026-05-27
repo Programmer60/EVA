@@ -36,8 +36,8 @@ export async function GET(request: NextRequest) {
       timestamp: m.timestamp,
     }));
 
-    // Cache for 2 minutes
-    await cacheSet(cacheKey, formatted, 120);
+    // Cache for 6 hours
+    await cacheSet(cacheKey, formatted, 21600);
     logger.info("[MongoDB Query] History API fetched & cached", { userId, limit, count: formatted.length });
 
     return NextResponse.json({ messages: formatted });

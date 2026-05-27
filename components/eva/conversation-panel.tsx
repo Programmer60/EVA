@@ -474,10 +474,13 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
       )
     );
     try {
-      await fetch("/api/training/feedback", {
-        method: "POST",
+      await fetch("/api/feedback", {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interactionId, type, userId }),
+        body: JSON.stringify({ 
+          interactionId, 
+          feedbackScore: type === "positive" ? 1 : -1 
+        }),
       });
     } catch {
       // silently fail feedback network errors

@@ -1212,8 +1212,8 @@ export async function POST(request: NextRequest): Promise<Response> {
         .limit(SHORT_TERM_CONTEXT_LIMIT)
         .lean();
       chronological = dbMessages.reverse();
-      // Cache for 5 minutes
-      await cacheSet(historyCacheKey, chronological, 300);
+      // Cache for 6 hours
+      await cacheSet(historyCacheKey, chronological, 21600);
       logger.info("[MongoDB Query] Chat history fetched & cached", { userId, count: chronological.length });
     }
 
@@ -1551,6 +1551,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       const preValidatedReply = validateAndFixResponse(parsedEmotion.clean, stabilityState);
       let reply: string = String(compressAndCleanReply(preValidatedReply, userEmotionSignal.label) ?? "");
 
+      // Strip "EVA: " or "**EVA**: " prefix if the model hallucinates it
+      reply = reply.replace(/^(\*\*?)?EVA(\*\*?)?:\s*/i, "");
       if (previousAssistantReply) {
         const normalizedCurrent = normalizeForComparison(reply);
         const normalizedPrevious = normalizeForComparison(previousAssistantReply);
