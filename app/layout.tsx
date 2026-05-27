@@ -16,9 +16,48 @@ const crimsonPro = Crimson_Pro({
 });
 
 export const metadata: Metadata = {
-  title: 'EVA - Emotional Awareness Companion',
-  description: 'Your calm, understanding companion for emotional wellness and mindful conversations',
-  generator: 'v0.app',
+  title: {
+    default: 'EVA | Emotional Awareness AI Companion',
+    template: '%s | EVA',
+  },
+  description: 'EVA is a next-generation AI companion designed with emotional intelligence, dynamic memory, and voice interaction. Experience a truly empathetic virtual assistant.',
+  keywords: ['AI companion', 'emotional AI', 'virtual assistant', 'mental wellness AI', 'empathetic chatbot', 'voice AI', 'Next.js AI app'],
+  authors: [{ name: 'EVA Developer' }],
+  creator: 'EVA Developer',
+  publisher: 'EVA',
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-video-preview': -1,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+    },
+  },
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    url: 'https://eva-ai.vercel.app', // Update this if you add a custom domain!
+    siteName: 'EVA AI Companion',
+    title: 'EVA | Emotionally Aware Virtual Assistant',
+    description: 'Experience an AI companion that truly understands. EVA tracks conversational state, emotional undertones, and relationship growth over time.',
+    images: [
+      {
+        url: '/eva_logo.png', // Fallback to logo if no specific OG image is made
+        width: 1200,
+        height: 630,
+        alt: 'EVA AI Companion Logo',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'EVA | Emotional Awareness AI Companion',
+    description: 'An AI companion that listens, remembers, and cares.',
+    images: ['/eva_logo.png'],
+  },
   icons: {
     icon: [
       {
