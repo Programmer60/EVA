@@ -1,59 +1,131 @@
-# EVA (Emotionally Aware Virtual Assistant)
+# EVA — Emotionally Aware Virtual Assistant
 
-EVA is a next-generation AI companion designed with emotional intelligence, memory continuity, and an expressive, dynamic presence. Unlike standard chatbots, EVA doesn't just answer questions—she tracks conversational state, emotional undertones, and relationship growth over time to provide a truly human-like companion experience.
+A modern AI companion focused on emotionally intelligent conversations, voice interaction, memory, and adaptive emotional presence.
+
+> EVA is not just another chatbot. It is designed to feel calm, emotionally aware, visually alive, and capable of maintaining meaningful conversational continuity.
+
+---
 
 ## ✨ Features
 
-- **Emotional Intelligence Engine**: Real-time emotion detection, tracking, and response pacing.
-- **Dynamic Face & Avatar**: A fully reactive SVG-based face with eye-tracking, lip-sync, and presence states (Idle, Thinking, Speaking).
-- **Proactive Initiative**: EVA can proactively reach out based on time passed, life events, or emotional momentum.
-- **Long-Term Memory**: Persistent memory storage using MongoDB with intelligent context retrieval and conversation summarization.
-- **Behavioral Profiles & Bonds**: A relationship engine that tracks bond scores (from new acquaintance to close friend).
-- **Voice Capabilities**: Web Audio API integration with browser and server-side text-to-speech fallback.
+### 🧠 Emotionally Aware Conversations
+- Detects emotional tone from user input in real-time.
+- Maintains conversational warmth and continuity across sessions.
+- **Adaptive response styles**: Empathetic, curious, calming, reflective, and supportive.
 
-## 🛠 Tech Stack
+### 🎙️ Voice Interaction
+- **Speech-to-Text (STT)**: Speak naturally to EVA.
+- **Text-to-Speech (TTS)**: Hear EVA's replies with emotion-driven pacing.
+- Built-in Browser TTS support with seamless **Google Cloud TTS** integration.
+- Auto-play voice replies for a hands-free companion experience.
 
-- **Frontend**: Next.js 16 (App Router), React 19, Tailwind CSS
-- **Backend**: Next.js API Routes, Node.js
+### 🧩 Long-Term Memory System
+- Short-term conversational context backed by high-speed **Redis**.
+- Long-term memory extraction, summarization, and retrieval via **MongoDB**.
+- Conversation continuity and bond progression tracking.
+
+### 🎭 Dynamic Emotional States
+EVA tracks and adapts to:
+- Mood and emotional baseline
+- Active conversation threads
+- Conversational bond (New Acquaintance → Close Friend)
+- Wellness and life events (Exams, interviews, etc.)
+
+### 🌸 Animated Avatar System
+- Live SVG-based companion avatar.
+- Emotion-reactive visual presence (blushing, pupil dilation, gaze drift).
+- Idle breathing, thinking, and listening states.
+- Fully implemented **Lip-sync** powered by Web Audio API.
+
+---
+
+## 🛠️ Tech Stack
+
+### Frontend
+- **Framework**: Next.js 16 (App Router), React 19
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+
+### Backend & Data
+- **API**: Next.js API Routes (Node.js edge)
 - **Database**: MongoDB (Mongoose)
-- **Caching & Rate Limiting**: Upstash Redis (`ioredis`)
+- **Caching / Rate Limiting**: Upstash Redis
 - **Authentication**: Clerk
-- **AI Models**: Google Gemini (Primary), OpenRouter API (Fallback)
-- **Voice**: Web Speech API / Google Cloud Text-to-Speech
 
-## 🚀 Getting Started
+### AI & Voice
+- **LLM Routing**: OpenRouter API (Defaulting to Google Gemini)
+- **Voice**: Web Speech APIs & Google Cloud TTS
 
-### Prerequisites
-- Node.js 20+
-- MongoDB Atlas cluster
-- Upstash Redis instance
-- Clerk account
-- OpenRouter & Google Gemini API keys
+---
 
-### Installation
+## 🚀 Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/eva-ai.git
-   cd eva-ai
-   ```
+**1. Clone the repository**
+```bash
+git clone https://github.com/yourusername/eva.git
+cd eva
+```
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+**2. Install dependencies**
+```bash
+npm install
+```
 
-3. Configure Environment Variables:
-   Copy `.env.local.example` to `.env.local` and fill in your API keys.
+**3. Configure environment variables**
+Create a `.env.local` file in the root directory:
+```env
+# AI Models
+OPENROUTER_API_KEY=your_openrouter_key
 
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
+# Databases
+MONGODB_URI=your_mongodb_uri
+REDIS_URL=your_redis_url
 
-5. Open [http://localhost:3000](http://localhost:3000) in your browser.
+# Authentication
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_key
+CLERK_SECRET_KEY=your_clerk_secret
 
-## 📚 Documentation
+# Admin Access
+ADMIN_USER_ID=your_clerk_user_id
 
-For in-depth architectural details, development logs, and AI behavior engine documentation, please see the `docs/` folder:
-- [Development Log & Architecture](docs/DEVELOPMENT_LOG.md)
+# Voice (Optional)
+NEXT_PUBLIC_ENABLE_SERVER_TTS=true
+GOOGLE_APPLICATION_CREDENTIALS_JSON=your_google_json
+```
+
+**4. Run development server**
+```bash
+npm run dev
+```
+
+---
+
+## 🔮 Planned Features
+- Mobile app (React Native / Expo)
+- Local AI inference mode (Ollama / Llama.cpp)
+- Multi-avatar support
+- Persistent user profile dashboard expansion
+
+---
+
+## 🧠 EVA Philosophy
+
+Most AI assistants are optimized for productivity. **EVA is optimized for emotional presence, conversational comfort, reflective interaction, and continuity.**
+
+The goal is to create an assistant that feels:
+- Calm
+- Emotionally attentive
+- Visually alive
+- Non-judgmental
+- Naturally conversational
+
+---
+
+## ⚠️ Disclaimer
+EVA is an emotional AI companion project and is **not** a replacement for professional mental health support.
+
+## 📄 License
+MIT License
+
+## 👨‍💻 Author
+Built with curiosity, experimentation, and emotional design exploration.
