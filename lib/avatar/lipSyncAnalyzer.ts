@@ -38,7 +38,7 @@ export class LipSyncAnalyzer {
   // Web Audio API state (for Audio element / server TTS)
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private source: MediaElementAudioSourceNode | null = null;
+  private source: AudioBufferSourceNode | null = null;
   private dataArray: Uint8Array | null = null;
 
   // Simulation state (for browser TTS)
@@ -91,7 +91,7 @@ export class LipSyncAnalyzer {
       console.log(`[LipSync] Successfully decoded MP3! Duration: ${audioBuffer.duration}s`);
       
       // If the component unmounted while we were awaiting decodeAudioData, abort gracefully!
-      if (this.mode === "off" || !this.audioContext || !this.analyser) {
+      if (!this.audioContext || !this.analyser) {
         console.warn("[LipSync] Aborting playback because analyzer was disconnected during decode.");
         return;
       }

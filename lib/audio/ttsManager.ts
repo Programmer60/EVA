@@ -269,14 +269,15 @@ export async function speakWithFallback(
       callbacks?.onStatusChange?.("idle");
       return "google";
     } catch (err) {
-      // Fallback to server OpenAI if available
+      // Fallback to server if available
       if (serverTtsEnabled) {
         callbacks?.onStatusChange?.(
           "fallback-activated",
           "Google Cloud TTS failed — falling back to server TTS.",
         );
         try {
-          await speakWithServerProvider(clean, requestId, "openai");
+          const fallbackProvider = options.googleEnabled ? "google" : "openai";
+          await speakWithServerProvider(clean, requestId, fallbackProvider);
           callbacks?.onStatusChange?.("idle");
           return "server";
         } catch {
@@ -311,7 +312,8 @@ export async function speakWithFallback(
 
     callbacks?.onStatusChange?.("speaking-server");
     try {
-      await speakWithServerProvider(clean, requestId, "openai");
+      const serverProvider = options.googleEnabled ? "google" : "openai";
+      await speakWithServerProvider(clean, requestId, serverProvider);
       callbacks?.onStatusChange?.("idle");
       return "server";
     } catch (err) {
@@ -334,7 +336,8 @@ export async function speakWithFallback(
         "Browser TTS failed — switching to server fallback.",
       );
       try {
-        await speakWithServerProvider(clean, requestId, "openai");
+        const fallbackProvider = options.googleEnabled ? "google" : "openai";
+        await speakWithServerProvider(clean, requestId, fallbackProvider);
         callbacks?.onStatusChange?.("idle");
         return "server";
       } catch (serverError) {

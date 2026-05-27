@@ -19,6 +19,34 @@ Template for future entries:
 	- ...
 ```
 
+### 2026-05-27
+
+- Completed:
+	- Full UI Integration of Behavioral & Presence Engines: Ported the Initiative Engine, Presence Engine (interruption logic), Emotion tracking, and Voice Audio context into the new clean `conversation-panel.tsx`.
+	- Added real-time presence interruption: typing while EVA is generating instantly aborts her stream.
+	- Added dynamic Mood Badge to the header, replacing static text with live emotion states and matching colors.
+	- Migrated Initiative Engine API routes (`/api/chat/initiative` and `/api/chat/initiative/respond`) to use Clerk server-side `auth()`, securing them for production.
+- Fixed:
+	- Solved disconnected/hallucinated replies by increasing the LLM context limits (`SHORT_TERM_CONTEXT_LIMIT` and `MEMORY_LIMIT`).
+	- Drastically reduced response latency by parallelizing 9 sequential engine DB calls with `Promise.all` in the main chat route.
+	- Prevented System Prompt Leakage by hardening `compressAndCleanReply` to strip behavior tags and rebuilding the anti-repeat prompt.
+	- Improved system fallback voice so error states sound natural ("Sorry, my thoughts got tangled") instead of robotic.
+
+### 2026-05-26
+
+- Completed:
+	- Integrated Clerk authentication for secure, beautiful user management, replacing local storage User ID hacks with secure server-side verification.
+	- Replaced custom dashboard profile button with Clerk's `<UserButton />`.
+	- Added Redis integration for high-performance provider health caching and API response caching.
+	- Enhanced UI by replacing robotic data pills with a dynamic, human-like relationship tag (e.g., "🌱 New acquaintance", "🌿 Familiar").
+- Changed:
+	- Removed traditional website footer links (About/Privacy/Contact) for a cleaner, app-like dashboard experience.
+- Fixed:
+	- Resolved Google Gemini model string issue (404 error) in `topicExtractor.ts`.
+	- Fixed a Node.js `url.parse()` deprecation warning by securely parsing Redis URLs with the WHATWG URL API inside `lib/redis.ts`.
+	- Fixed Next.js 16 build warnings by migrating from `middleware.ts` to `proxy.ts`.
+
+
 ### 2026-05-25
 
 - Critical Fix: Audio Pipeline Autoplay Block & Ghost Connections:
@@ -409,6 +437,21 @@ A **diversity filter** limits max 2 memories per category (preference/fact/summa
 | `createdAt` | Date | Memory lifecycle |
 
 Access stats: `accessCount` is incremented, `lastAccessed` is updated on every retrieval.
+
+### 8. Cost & Architecture Optimization (Why No Vector DB Yet)
+
+EVA's architecture has been aggressively optimized to keep API costs as close to $0 as possible on OpenRouter, while maintaining high intelligence.
+
+#### Implemented Cost Reductions
+1. **Prompt Caching Architecture:** The massive 1,500+ token `SYSTEM_PROMPT` is decoupled from dynamic state variables and sent as an invariant `system` message. This allows OpenRouter to natively hit prompt caches (and includes Anthropic `cache_control` headers), yielding massive token discounts on every turn.
+2. **Auto-Down-Tiering:** If a user sends a "low signal" backchannel (e.g., "yeah", "hmm", "ok"), the API route intercepts the request and hot-swaps the expensive model (GPT-5.5 / Claude) for a free/cheap model (`google/gemini-2.5-flash-lite`). Premium tokens are only spent on complex questions.
+3. **Summarization Memory:** Instead of sending massive chat histories to the LLM, EVA compresses old conversations into a `conversation_summary` fact in MongoDB, capping raw message history to the absolute minimum.
+
+#### Why We Don't Use a Vector DB (Yet)
+While traditional RAG uses Vector Databases (like Pinecone) to find semantic similarity, it is explicitly **not recommended** for this phase of EVA because:
+- **Human memory isn't semantic:** Vector DBs pull memories based on mathematical word similarity. Our custom MongoDB heuristic (Keyword Overlap + Recency + Importance) accurately replicates how a *companion* remembers things—prioritizing emotional weight and recent facts over pure text similarity.
+- **Latency & Cost:** True RAG requires generating an Embedding (extra API call) for every single user message, adding latency and cost to every turn.
+- **Scale:** Vector DBs are only necessary when a single user crosses ~500+ individual memory facts, where keyword indexing becomes a bottleneck. Our MongoDB setup is blazing fast and completely sufficient for a personal companion scale.
 
 ## Analytics (Phase 5.5)
 

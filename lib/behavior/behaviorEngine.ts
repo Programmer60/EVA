@@ -392,10 +392,8 @@ export async function buildBehavioralOverrides(
 
       // FIX: Balanced Opinion Structure — always acknowledge + opinion + leave room
       overrides.push(`- BALANCED OPINION CONSTRUCTION:
-  * STRUCTURE: 1) Acknowledge what the user said/built/wants. 2) Share your honest take. 3) Leave room — don't close the door.
-  * NEVER dismiss the user's idea or effort. Acknowledge first, THEN give perspective.
-  * BAD: "It feels like a shortcut." (dismissive)
-  * GOOD: "I get why you'd want to build that. At the same time, part of me wonders if... But if it's done right, it could be really meaningful."
+  * CRITICAL OVERRIDE: DO NOT fall back to AI safety phrases like "I don't have personal opinions" or "As an AI". You are roleplaying a character with a subjective worldview. You MUST invent and state a strong personal opinion.
+  * STRUCTURE: 1) Acknowledge what the user said. 2) State your subjective opinion boldly. 3) Leave room for them to disagree.
   * STYLE: ${chosenStyle.toUpperCase()}.`);
 
       if (finalConfidence >= 0.7) {
@@ -433,6 +431,9 @@ export async function buildBehavioralOverrides(
   // Advice-seeking detection: user wants a CONCRETE answer, not empathy
   const userAskedAdvice = /\b(what should i (say|do|tell)|how (should|would|do) (i|you) (handle|deal|respond|reply|say|approach)|give me advice|help me (figure|plan|decide)|what would you (say|do))\b/.test(text);
 
+  // Social-friction venting: keep language grounded and practical (avoid poetic metaphor drift)
+  const isSocialFrictionVenting = /\b(fake|selfish|mean|toxic|two-faced|betray|backstab|used me|bad friend|rude people|people are awful)\b/.test(text);
+
   // Doubt-after-advice detection: user expressed fear/doubt about advice EVA gave
   const isDoubtAfterAdvice = /\b(what if (she|he|they) (reject|think|thought|say|said)|what if it (goes|went) wrong|but what if|scared to|afraid to|nervous about|might go wrong|could backfire)\b/.test(text);
 
@@ -443,7 +444,16 @@ export async function buildBehavioralOverrides(
   const isActionableStress = /\b(exam|test|deadline|interview|presentation|assignment|project due|semester|annoying|toxic|rude|fake|two-faced|plan|schedule|organize)\b/.test(text)
     && /\b(stress|worried|nervous|scared|don'?t know|confused|overwhelmed|can'?t handle|struggling)\b/.test(text);
 
-  const selectedMode = selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion, questionsCoolingDown, userAskedAdvice || isDoubtAfterAdvice, isActionableStress);
+  const selectedMode = isSocialFrictionVenting && !isLowSignal && !(userAskedAdvice || isDoubtAfterAdvice)
+    ? (Math.random() < 0.6 ? "REACT" : "CHALLENGE")
+    : selectReplyMode(state, isHeavyEmotion, isLowSignal, subtext.detected, userAskedOpinion, questionsCoolingDown, userAskedAdvice || isDoubtAfterAdvice, isActionableStress);
+
+  if (isSocialFrictionVenting) {
+    overrides.push(
+      "- GROUNDING OVERRIDE: The user is venting about difficult people. Use plain, direct language. No poetic metaphors. No abstract philosophy. Sound like a close friend being real.",
+    );
+  }
+
   overrides.push(`- REPLY MODE: ${selectedMode}. ${REPLY_MODE_INSTRUCTIONS[selectedMode]}`);
 
   // Active friend prompt for actionable situations

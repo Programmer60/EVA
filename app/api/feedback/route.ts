@@ -35,7 +35,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     const updated = await TrainingInteraction.findByIdAndUpdate(
       body.interactionId,
       { $set: updateData },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updated) {

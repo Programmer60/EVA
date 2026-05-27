@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { AppError, toErrorResponse } from "@/lib/errors";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
@@ -193,8 +194,8 @@ function cleanInitiativeReply(raw: string): string {
 
 export async function POST(request: NextRequest) {
   try {
-    const { userId } = await request.json();
-    if (!userId) throw new AppError("userId is required", 400);
+    const { userId } = await auth();
+    if (!userId) throw new AppError("Unauthorized", 401);
 
     await connectDB();
 

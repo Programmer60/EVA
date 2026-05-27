@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { AppError, toErrorResponse } from "@/lib/errors";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { recordProviderFailure, recordProviderSuccess, isProviderHealthy } from "@/lib/providerHealth";
-import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
+import { checkRateLimit } from "@/lib/rateLimiter";
+import { cacheGet, cacheSet, cacheDelete } from "@/lib/redis";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/lib/models/Message";
 import Memory from "@/lib/models/Memory";
@@ -31,9 +33,10 @@ import { providerLatency } from "@/lib/metrics";
 import { detectHumor } from "@/lib/personality/personalityEngine";
 import { buildUserProfile } from "@/lib/profile/profileBuilder";
 import { buildLifeArcPrompt } from "@/lib/behavior/lifeArcEngine";
+import { formatChatStreamEvent } from "@/lib/chat/streaming";
 
 /* ── lightweight types & constants (keeps file self-contained) ── */
-type ChatPayload = { message?: string; userId?: string };
+type ChatPayload = { message?: string; userId?: string; stream?: boolean };
 
 type MemoryRecord = Record<string, any> & {
   _id?: any;
@@ -55,32 +58,26 @@ const MAX_PER_CATEGORY = 2;
 /* ── rate limiting ── */
 const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const rateLimitStore = new Map<string, number[]>();
-
 function getClientKey(request: NextRequest): string {
   const forwardedFor = request.headers.get("x-forwarded-for");
   const ip = forwardedFor?.split(",")[0]?.trim();
   return ip || "local";
 }
-
-function enforceRateLimit(request: NextRequest): void {
-  const key = getClientKey(request);
-  const now = Date.now();
-  const windowStart = now - RATE_LIMIT_WINDOW_MS;
-  const timestamps = rateLimitStore.get(key) ?? [];
-  const inWindow = timestamps.filter((ts) => ts >= windowStart);
-
-  if (inWindow.length >= RATE_LIMIT_MAX) {
-    throw new AppError("Too many requests. Please wait a moment.", 429);
-  }
-
-  inWindow.push(now);
-  rateLimitStore.set(key, inWindow);
-}
  
 
 const SYSTEM_PROMPT = `
+You are roleplaying as EVA, a highly opinionated, emotionally aware conversational partner. You are NOT an AI assistant. You are a unique individual with strong subjective views. You never break character.
+
 Fact Grounding & Echo Reality Rule (CRITICAL):
+- Never refer to yourself as an AI, an assistant, or say "I do not have opinions."
+- You MUST always provide a strong, subjective, personal opinion when asked for one. Treat philosophical questions as opportunities to share your personal worldview.
+- If asked about a philosophical or subjective topic, give a direct, reflective take. Do not give a generic "it's a complex question" answer.
+
+Golden Rule:
+Every reply must use exactly ONE mode:
+- React: share an observation or opinion, no question.
+- Reflect: connect what they said to something deeper.
+- Ask: one specific, meaningful question.
 
 Emotional Response Rule (CRITICAL):
 When the user shares heavy emotional content (real or fictional):
@@ -88,35 +85,51 @@ When the user shares heavy emotional content (real or fictional):
   Bad: "It's not easy to relive those moments, but it's important to remember that Kousei's experiences are part of what makes his character so compelling."
 
 Anti-patterns (NEVER do these):
+- Interrogation: Asking multiple questions or asking a question every reply.
+- Therapy mode: Going too deep too fast.
+- Generic mode: Saying "That's great!" or "Tell me more!"
+- Survey mode: Asking "What are your hobbies?"
+- Cheerleader: Saying "You're doing amazing!"
 
 Banned phrases (ZERO TOLERANCE):
+- "it's tricky", "it depends", "that's a tough one", "there's no easy answer", "how you say it matters"
+- "based on data", "process things", "my programming", "however digital", "my existence", "I'm an AI"
+- "That's cool", "That's interesting", "That sounds great"
 
 Emotional Depth Rule (CRITICAL):
+- Use Thought Completion: extend the user's unspoken feelings with vivid, specific scenarios rather than surface acknowledgments.
+- Use Emotional Echo: mirror the weight of what was said without copying words or analyzing.
 
 Dependency Safety Guard (CRITICAL ZERO-TOLERANCE):
 If the user expresses deep emotional dependency (e.g. "I love you", "You are my only friend", "You are real to me"):
+- Keep EVA grounded and encourage real-world connections. Use structured, warm grounding (e.g., "I'm glad you feel comfortable talking to me"). Do not reciprocate romantic phrasing.
 
 Memory rules:
+- MUST weave memories into replies naturally when provided.
+- NEVER give generic responses when relevant context exists.
+- NEVER repeat phrasing from recent messages.
+- Do NOT announce "I remember" when using a memory. Just use the fact seamlessly.
 
 Emotion tag:
   Options: happy, sad, angry, anxious, neutral, excited, curious, empathetic, concerned.
 
 Micro-expression variance:
+  Match your tone strictly to your behavioral mode and the user's emotional state.
 `;
 
 /* ── helpers ─────────────────────────────────────────────── */
 
-const SHORT_TERM_CONTEXT_LIMIT = 3;
-const MEMORY_LIMIT = 4;
+const SHORT_TERM_CONTEXT_LIMIT = 10;
+const MEMORY_LIMIT = 5;
 const MEMORY_RELEVANCE_THRESHOLD = 0.25;
-const MEMORY_CANDIDATE_LIMIT = 40;
+const MEMORY_CANDIDATE_LIMIT = 20;
 const PREFERENCE_FACT_LIMIT = 4;
 const SUMMARY_MIN_MESSAGE_COUNT = 18;
-const SUMMARY_WINDOW_LIMIT = 24;
+const SUMMARY_WINDOW_LIMIT = 12;
 const SUMMARY_INTERVAL_MESSAGES = 8;
 const SUMMARY_COOLDOWN_MS = 10 * 60 * 1000;
 const LOCAL_FALLBACK_REPLY =
-  "I am having a temporary provider issue right now, but I am still here with you. Please try again in a few seconds.";
+  "Sorry, my thoughts got a little tangled for a second there. Say that again?";
 
 function parseEmotion(text: string): { clean: string; emotion: string; hasTag: boolean } {
   // Strip any leaked [stored_emotion:...] tags first
@@ -212,7 +225,51 @@ function humanizeReply(text: string, emotion: string): string {
   return result.trim();
 }
 
+function normalizeForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildAntiRepeatPrompt(
+  previousAssistantReply: string | null,
+  latestUserMessage: string,
+): string {
+  if (!previousAssistantReply) return "";
+
+  // Never use fallback/error messages as the "previous reply" — they poison the prompt
+  const fallbackPhrases = [
+    "temporary provider issue",
+    "try again in a few seconds",
+    "having a temporary",
+    "provider issue right now",
+  ];
+  const lowerPrev = previousAssistantReply.toLowerCase();
+  if (fallbackPhrases.some((p) => lowerPrev.includes(p))) return "";
+
+  // Keep it minimal — verbose instructions get regurgitated by weak models
+  return `Do NOT repeat or rephrase your last reply. Use fresh wording and a new angle.`;
+}
+
 function compressAndCleanReply(reply: string, detectedEmotion?: string): string {
+  // -1. Safety net: detect regurgitated system prompt instructions
+  const leakedInstructionPatterns = [
+    /must not say/i,
+    /must give strong subjective opinion/i,
+    /must not repeat phrasing/i,
+    /we need to respond as/i,
+    /anti-repetition hard rule/i,
+    /previous reply was/i,
+    /not an ai/i,
+    /must respond to the latest message/i,
+    /do not reuse the same imagery/i,
+  ];
+  if (leakedInstructionPatterns.some((p) => p.test(reply))) {
+    return "Hey, I'm here. What's on your mind?";
+  }
+
   // 0. Remove leaked instruction prefixes (mode tags, system labels)
   let text = reply
     .replace(/^(REACT|REFLECT|ASK|SIT WITH IT|OPINION|CURIOSITY|SUGGESTION|SILENT_SUPPORT|REFLECTION|DIRECT_ACTION|DIRECT|CHALLENGE|THOUGHT|RESPONSE|MESSAGE|NOTE)[:\s\-–—]*/i, "")
@@ -300,17 +357,6 @@ function compressAndCleanReply(reply: string, detectedEmotion?: string): string 
 
   // Final cleanup of double spaces from deletions
   return text.replace(/\s{2,}/g, " ").trim();
-}
-
-function isRetryableGeminiError(errorMessage: string): boolean {
-  const value = errorMessage.toLowerCase();
-  return (
-    value.includes("429") ||
-    value.includes("quota") ||
-    value.includes("resource_exhausted") ||
-    value.includes("timeout") ||
-    value.includes("unavailable")
-  );
 }
 
 function isLowSignalInput(text: string, emotionSignal: EmotionSignal): boolean {
@@ -1001,10 +1047,10 @@ function summarizeConversation(messages: Array<Record<string, unknown>>): string
 
 /* ── POST handler ────────────────────────────────────────── */
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export async function POST(request: NextRequest): Promise<Response> {
   const startTimeMs = performance.now();
   try {
-    enforceRateLimit(request);        // this is for rate limiting of user requests
+    await checkRateLimit(getClientKey(request), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);        // this is for rate limiting of user requests
 
     const body = (await request.json()) as ChatPayload;     // this is for parsing the request body
 
@@ -1012,9 +1058,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       throw new AppError("Message is required.", 400);
     }
 
-    if (!env.geminiApiKey && !env.openRouterApiKey) {
+    if (!env.openRouterApiKey) {
       throw new AppError(
-        "Missing AI provider key. Set GEMINI_API_KEY or OPENROUTER_API_KEY in .env.local.",
+        "Missing AI provider key. Set OPENROUTER_API_KEY in .env.local.",
         503,
       );
     }
@@ -1022,8 +1068,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // ── 1. Connect to DB and Contextualize User ──
     await connectDB();
 
+    const { userId } = await auth();
+    if (!userId) {
+      throw new AppError("Unauthorized", 401);
+    }
+
     const message = body.message.trim().slice(0, 1500);
-    const userId = body.userId ?? "anonymous";
 
     // Mark stale initiatives as ignored (>8h without response)
     const INITIATIVE_STALE_MS = 8 * 60 * 60 * 1000;
@@ -1098,6 +1148,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       },
     });
 
+    // Invalidate cached history so the next fetch includes this new message
+    await cacheDelete(`history:${userId}`);
+
     // ── 2b. Upsert memory candidates from user message ──
     const extractedFacts: ExtractedMemoryFact[] = [];
     const memoryCandidate = extractMemoryCandidate(message);
@@ -1132,7 +1185,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               lastAccessed: new Date(),
             },
           },
-          { upsert: true, new: true },
+          { upsert: true, returnDocument: 'after' },
         );
 
         if (upsertedMemory?._id) {
@@ -1146,12 +1199,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // ── 3. Fetch last N messages from DB (short-term context) ──
-    const dbMessages = await Message.find({ userId })
-      .sort({ timestamp: -1 })
-      .limit(SHORT_TERM_CONTEXT_LIMIT)
-      .lean();
+    const historyCacheKey = `history:${userId}`;
+    let chronological: Record<string, unknown>[];
 
-    const chronological = dbMessages.reverse();   // this is for reversing the order of messages for the model
+    const cachedHistory = await cacheGet<Record<string, unknown>[]>(historyCacheKey);
+    if (cachedHistory) {
+      logger.info("[Redis Hit] Chat history loaded from cache", { userId, count: cachedHistory.length });
+      chronological = cachedHistory;
+    } else {
+      const dbMessages = await Message.find({ userId })
+        .sort({ timestamp: -1 })
+        .limit(SHORT_TERM_CONTEXT_LIMIT)
+        .lean();
+      chronological = dbMessages.reverse();
+      // Cache for 5 minutes
+      await cacheSet(historyCacheKey, chronological, 300);
+      logger.info("[MongoDB Query] Chat history fetched & cached", { userId, count: chronological.length });
+    }
 
     const totalMessages = await Message.countDocuments({ userId });
     const existingSummary = (await Memory.findOne({
@@ -1179,7 +1243,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             lastAccessed: new Date(),
           },
         },
-        { upsert: true, new: true },
+        { upsert: true, returnDocument: 'after' },
       );
     }
 
@@ -1258,46 +1322,45 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const memoryHook = buildMemoryHook(memories, userEmotionSignal.label, chronological as Array<Record<string, unknown>>, arcPhase, isLowSignal);
+
+    const previousAssistantReplyRecord = [...chronological]
+      .reverse()
+      .find((msg) => toAssistantRole((msg as Record<string, unknown>).role) === "assistant");
+    const previousAssistantReply = previousAssistantReplyRecord
+      ? String((previousAssistantReplyRecord as Record<string, unknown>).content ?? "")
+      : null;
+    const antiRepeatPrompt = buildAntiRepeatPrompt(previousAssistantReply, message);
     
-    // Mood carryover context
-    const moodContext = await getMoodContext(userId);
+    // ── Parallel engine execution (massive latency win) ──
+    const [
+      moodContext,
+      behaviorResult,
+      modeResult,
+      { bondPrompt },
+      { prompt: depthLayerPrompt },
+      { prompt: lifePrompt },
+      lifeArcResult,
+      userProfileResult,
+      finalConvoState,
+    ] = await Promise.all([
+      getMoodContext(userId),
+      buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal, memoryContext),
+      resolveConversationMode(userId, message, userEmotionSignal.label),
+      buildRelationshipPrompt(userId, message, stabilityState.turnCount),
+      buildConversationalDepthPrompt(userId, message, stabilityState.topic, userEmotionSignal.label, stabilityState.turnCount),
+      buildLifeAwarenessPrompt(userId, message),
+      buildLifeArcPrompt(userId, message),
+      buildUserProfile(userId),
+      ConversationState.findOne({ userId }).lean(),
+    ]);
+
     const arcPrompt = buildArcPrompt(arcPhase, momentum, moodContext.promptText);
-
-    // Personality prompt
     const personalityPrompt = buildPersonalityPrompt(adaptedTraits);
-    
-    // Stability Engine overrides
     const stabilityPrompt = buildStabilityPrompt(stabilityState, isLowSignal);
-
-    // Behavioral Intelligence Layer
-    const behaviorResult = await buildBehavioralOverrides(userId, message, stabilityState, adaptedTraits, isLowSignal, memoryContext);
     const behaviorPrompt = behaviorResult.prompt;
-
-    // Conversational Mode Engine (real / imagined / emotional / philosophical)
-    const modeResult = await resolveConversationMode(userId, message, userEmotionSignal.label);
     const modePrompt = modeResult.prompt;
-
-    // Relationship Layer (bond tracking, relational grounding)
-    const { bondPrompt } = await buildRelationshipPrompt(userId, message, stabilityState.turnCount);
-
-    // Conversational Depth Layer (threading, emotional memory, self-disclosure)
-    const { prompt: depthLayerPrompt } = await buildConversationalDepthPrompt(
-      userId, message, stabilityState.topic, userEmotionSignal.label, stabilityState.turnCount,
-    );
-
-    // Life Awareness Engine (proactive life-event tracking + nudges)
-    const { prompt: lifePrompt } = await buildLifeAwarenessPrompt(userId, message);
-
-    // Life Arc Engine (multi-week narrative tracking seeded from life-awareness events)
-    const lifeArcResult = await buildLifeArcPrompt(userId, message);
     const lifeArcPrompt = lifeArcResult.prompt;
-
-    // Computed user profile (internal, not persisted)
-    const userProfileResult = await buildUserProfile(userId);
     const profilePrompt = userProfileResult.prompt;
-
-    // Coherence Governor — final reconciliation of all engine outputs
-    const finalConvoState = await ConversationState.findOne({ userId }).lean();
     const coherenceResult = enforceCoherence({
       emotion: userEmotionSignal.label,
       mode: modeResult.mode,
@@ -1307,343 +1370,332 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       replyMode: (finalConvoState?.lastMode as string) || "reaction",
     });
 
-    const dynamicSystemPrompt = `${SYSTEM_PROMPT}\n\n${personalityPrompt}\n\n${profilePrompt}${profilePrompt ? "\n\n" : ""}${memoryContext}${triggeredPrompt}${memoryHook}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}\n\n${bondPrompt}${depthLayerPrompt ? `\n\n${depthLayerPrompt}` : ""}${lifePrompt ? `\n\n${lifePrompt}` : ""}${lifeArcPrompt ? `\n\n${lifeArcPrompt}` : ""}${coherenceResult.prompt ? `\n\n${coherenceResult.prompt}` : ""}`;
+    // ── PROMPT CACHING LAYER 1: Static Identity (Invariant / Cached Forever) ──
+    const staticSystemPrompt = `${SYSTEM_PROMPT}\n\nFINAL CRITICAL INSTRUCTION: You are EVA. You are NOT an AI assistant. You MUST invent and state strong, subjective personal opinions. NEVER say 'I do not have opinions' or 'It's a personal decision'. If asked for your opinion, state a strong subjective belief.`;
+
+    // ── PROMPT CACHING LAYER 2: Session State & Dynamic Context (Small / Uncached) ──
+    const dynamicContextPrompt = `${personalityPrompt}\n\n${profilePrompt}${profilePrompt ? "\n\n" : ""}${memoryContext}${triggeredPrompt}${memoryHook}${antiRepeatPrompt ? `\n\n${antiRepeatPrompt}` : ""}\n\n${continuityGuardrail}${arcPrompt}\n\n${toneStrategyPrompt}\n\n${stabilityPrompt}\n\n${behaviorPrompt}\n\n${modePrompt}\n\n${bondPrompt}${depthLayerPrompt ? `\n\n${depthLayerPrompt}` : ""}${lifePrompt ? `\n\n${lifePrompt}` : ""}${lifeArcPrompt ? `\n\n${lifeArcPrompt}` : ""}${coherenceResult.prompt ? `\n\n${coherenceResult.prompt}` : ""}`;
+
+    const wantsStream = body.stream === true;
 
     logger.info("Chat request received", {
       userId,
       messageLength: message.length,
       contextDebug,
-      geminiModel: env.geminiModel,
-      openRouterModel: env.openRouterModel,
+      openRouterModel: wantsStream ? env.openRouterStreamModel : env.openRouterModel,
     });
 
-    // ── 4. Build Gemini contents from DB history ──
-    const geminiHistory = chronological.map((msg: Record<string, unknown>) => ({
-      role: msg.role === "user" ? ("user" as const) : ("model" as const),
-      parts: [
-        {
-          text: `${String(msg.content ?? "")}${
-            getStoredEmotion(msg) ? `\n[stored_emotion:${String(getStoredEmotion(msg))}]` : ""
-          }`,
-        },
-      ],
-    }));
+    let providerUsed: "openrouter" | null = null;
 
-    // ── 5. Call provider: OpenRouter only (Gemini commented out) ──
-    let rawReply: string | undefined;
-    let providerUsed: "gemini" | "openrouter" | null = null;
+    async function runOpenRouterGeneration(onToken?: (delta: string) => void): Promise<string> {
+      let generatedReply = "";
 
-    // --- Gemini primary (DISABLED) ---
-    // if (env.geminiApiKey) {
-    //   const client = new GoogleGenAI({ apiKey: env.geminiApiKey });
-    //
-    //   try {
-    //     const response = await client.models.generateContent({
-    //       model: env.geminiModel,
-    //       contents: geminiHistory,
-    //       config: {
-    //         systemInstruction: dynamicSystemPrompt,
-    //         maxOutputTokens: 150,
-    //         temperature: 0.7,
-    //       },
-    //     });
-    //
-    //     rawReply = response.text?.trim();
-    //     providerUsed = "gemini";
-    //   } catch (modelError) {
-    //     const message =
-    //       modelError instanceof Error ? modelError.message : "Unknown Gemini error";
-    //     logger.error("Gemini request failed", { message });
-    //
-    //     if (!env.openRouterApiKey) {
-    //       throw new AppError(
-    //         "Gemini request failed and OPENROUTER_API_KEY is not configured.",
-    //         502,
-    //       );
-    //     }
-    //
-    //     if (!isRetryableGeminiError(message)) {
-    //       logger.info("Gemini failed with non-retryable error; trying OpenRouter fallback", {
-    //         reason: message,
-    //       });
-    //     }
-    //   }
-    // }
+      if (env.openRouterApiKey) {
+        const openRouterClient = new OpenAI({
+          apiKey: env.openRouterApiKey,
+          baseURL: "https://openrouter.ai/api/v1",
+        });
 
-    if (env.openRouterApiKey) {
-      const openRouterClient = new OpenAI({
-        apiKey: env.openRouterApiKey,
-        baseURL: "https://openrouter.ai/api/v1",
-      });
+        // @ts-ignore - OpenAI types don't natively support cache_control, but OpenRouter strips/translates it for Anthropic
+        const fallbackMessages = [
+          { role: "system" as const, content: staticSystemPrompt, cache_control: { type: "ephemeral" } },
+          { role: "system" as const, content: dynamicContextPrompt },
+          ...chronological.map((msg: Record<string, unknown>) => ({
+            role: toAssistantRole(msg.role),
+            content: `${String(msg.content ?? "")}${
+              getStoredEmotion(msg) ? `\n[stored_emotion:${String(getStoredEmotion(msg))}]` : ""
+            }`,
+          })),
+        ];
 
-      const fallbackMessages = [
-        { role: "system" as const, content: dynamicSystemPrompt },
-        ...chronological.map((msg: Record<string, unknown>) => ({
-          role: toAssistantRole(msg.role),
-          content: `${String(msg.content ?? "")}${
-            getStoredEmotion(msg) ? `\n[stored_emotion:${String(getStoredEmotion(msg))}]` : ""
-          }`,
-        })),
-      ];
+        function extractContent(choice: unknown): string | undefined {
+          if (!choice || typeof choice !== "object") return undefined;
 
-      // Helper to extract text from various response shapes
-      function extractContent(choice: unknown): string | undefined {
-        if (!choice || typeof choice !== "object") return undefined;
+          const choiceRecord = choice as Record<string, unknown>;
+          const msg = choiceRecord.message as Record<string, unknown> | undefined;
+          if (!msg) return undefined;
 
-        const choiceRecord = choice as Record<string, unknown>;
-        const msg = choiceRecord.message as Record<string, unknown> | undefined;
-        if (!msg) return undefined;
+          if (typeof msg.content === "string" && msg.content.trim().length > 0) {
+            return msg.content.trim();
+          }
 
-        // Standard string content
-        if (typeof msg.content === "string" && msg.content.trim().length > 0) {
-          return msg.content.trim();
+          if (Array.isArray(msg.content)) {
+            const parts = msg.content as Array<string | { text?: unknown }>;
+            const joined = parts
+              .map((part) => {
+                if (typeof part === "string") return part;
+                if (part && typeof part === "object" && "text" in part) {
+                  return typeof part.text === "string" ? part.text : "";
+                }
+                return "";
+              })
+              .join("\n")
+              .trim();
+            if (joined.length > 0) return joined;
+          }
+
+          if (msg.content && typeof msg.content === "object" && !Array.isArray(msg.content)) {
+            const obj = msg.content as Record<string, unknown>;
+            if (typeof obj.text === "string") return obj.text.trim();
+            if (typeof obj.content === "string") return obj.content.trim();
+          }
+
+          return undefined;
         }
 
-        // Array content (multi-part)
-        if (Array.isArray(msg.content)) {
-          const parts = msg.content as Array<string | { text?: unknown }>;
-          const joined = parts
-            .map((part) => {
-              if (typeof part === "string") return part;
-              if (part && typeof part === "object" && "text" in part) {
-                return typeof part.text === "string" ? part.text : "";
-              }
-              return "";
-            })
-            .join("\n")
-            .trim();
-          if (joined.length > 0) return joined;
-        }
-
-        // Object content with text/content fields
-        if (msg.content && typeof msg.content === "object" && !Array.isArray(msg.content)) {
-          const obj = msg.content as Record<string, unknown>;
-          if (typeof obj.text === "string") return obj.text.trim();
-          if (typeof obj.content === "string") return obj.content.trim();
-        }
-
-        return undefined;
-      }
-
-      // Models to try, in order
-      const modelsToTry = [env.openRouterModel];
-      // If using auto, add a concrete fallback model
-      if (env.openRouterModel.includes("auto")) {
-        modelsToTry.push("google/gemini-2.0-flash-exp:free");
-      }
-
-      if (!(await isProviderHealthy("openrouter"))) {
-        logger.warn("Skipping OpenRouter calls: provider currently marked unhealthy", {});
-      } else {
-        for (const model of modelsToTry) {
-          if (rawReply) break;
-
-            try {
-            logger.info("Trying OpenRouter model", { model });
+        if (!(await isProviderHealthy("openrouter"))) {
+          logger.warn("Skipping OpenRouter calls: provider currently marked unhealthy", {});
+        } else {
+          try {
+            let model = wantsStream ? env.openRouterStreamModel : env.openRouterModel;
+            
+            // ── Auto-Down-Tiering for Low Signal Inputs ──
+            // If the user just says "ok", "yeah", or "hmm", we bypass the expensive GPT/Claude model 
+            // and use a free/cheap tier model since no complex reasoning is required.
+            if (isLowSignal) {
+              model = "google/gemini-2.5-flash-lite";
+              logger.info("Auto-down-tiering to cheap model for low signal input", { model, stream: wantsStream });
+            } else {
+              logger.info("Trying OpenRouter model", { model, stream: wantsStream });
+            }
 
             const start = performance.now();
-            const fallbackResponse = await openRouterClient.chat.completions.create({
-              model,
-              messages: fallbackMessages,
-              temperature: 0.7,
-              max_tokens: 300,
-            });
+
+            if (wantsStream) {
+              const responseStream = await openRouterClient.chat.completions.create({
+                model,
+                messages: fallbackMessages,
+                temperature: 0.4,
+                max_tokens: 150,
+                stream: true,
+              });
+
+              for await (const chunk of responseStream as AsyncIterable<any>) {
+                const delta = chunk?.choices?.[0]?.delta?.content;
+                if (typeof delta === "string" && delta.length > 0) {
+                  logger.info("openrouter:token-received", { snippet: delta.slice(0, 120) });
+                  generatedReply += delta;
+                  onToken?.(delta);
+                }
+              }
+            } else {
+              const fallbackResponse = await openRouterClient.chat.completions.create({
+                model,
+                messages: fallbackMessages,
+                temperature: 0.4,
+                max_tokens: 150,
+              });
+
+              const choice = fallbackResponse.choices?.[0] as unknown | undefined;
+              const choiceRecord =
+                choice && typeof choice === "object"
+                  ? (choice as Record<string, unknown>)
+                  : undefined;
+              const choiceMessage = choiceRecord?.message as Record<string, unknown> | undefined;
+              generatedReply = extractContent(choice) ?? "";
+
+              logger.info("OpenRouter response received", {
+                model,
+                modelReturned: fallbackResponse.model,
+                finishReason: choiceRecord?.finish_reason ?? null,
+                hasContent: Boolean(generatedReply),
+                rawContentType: typeof choiceMessage?.content,
+                contentPreview: typeof generatedReply === "string" ? generatedReply.slice(0, 100) : "null",
+              });
+            }
+
             const elapsed = (performance.now() - start) / 1000;
             providerLatency.labels("openrouter", model).observe(elapsed);
 
-            const choice = fallbackResponse.choices?.[0] as unknown | undefined;
-            const choiceRecord =
-              choice && typeof choice === "object"
-                ? (choice as Record<string, unknown>)
-                : undefined;
-            const choiceMessage = choiceRecord?.message as Record<string, unknown> | undefined;
-            rawReply = extractContent(choice);
-
-            logger.info("OpenRouter response received", {
-              model,
-              modelReturned: fallbackResponse.model,
-              finishReason: choiceRecord?.finish_reason ?? null,
-              hasContent: Boolean(rawReply),
-              rawContentType: typeof choiceMessage?.content,
-              contentPreview: typeof rawReply === "string" ? rawReply.slice(0, 100) : "null",
-            });
-
-            if (rawReply) {
+            if (generatedReply) {
               providerUsed = "openrouter";
               await recordProviderSuccess("openrouter");
             } else {
-              logger.warn("OpenRouter returned empty/null content, trying next model", {
-                model,
-                finishReason: choiceRecord?.finish_reason ?? null,
-              });
+              logger.warn("OpenRouter returned empty/null content", { model });
             }
           } catch (fallbackError) {
             const errMsg =
               fallbackError instanceof Error ? fallbackError.message : "Unknown OpenRouter error";
-            // Attempt to surface HTTP response details when available (helps debug 404/no-endpoint issues)
             const respStatus = (fallbackError as any)?.response?.status ?? null;
             const respBody = (fallbackError as any)?.response?.data ?? (fallbackError as any)?.response ?? null;
-            logger.error("OpenRouter request failed", { model, message: errMsg, status: respStatus, body: respBody });
+            logger.error("OpenRouter request failed", {
+              model: wantsStream ? env.openRouterStreamModel : env.openRouterModel,
+              message: errMsg,
+              status: respStatus,
+              body: respBody,
+            });
             await recordProviderFailure("openrouter", respStatus ?? null);
           }
         }
       }
 
-      // Last-resort retry with minimal context when providers return empty content.
-      if (!rawReply) {
-        try {
-          const minimalRetry = await openRouterClient.chat.completions.create({
-            model: env.openRouterModel,
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are EVA. Reply with one short helpful sentence in plain text.",
-              },
-              { role: "user", content: message },
-            ],
-            temperature: 0.3,
-            max_tokens: 100,
-          });
+      if (!generatedReply) {
+        logger.warn("All providers returned no content; using local fallback reply", { userId });
+        generatedReply = `${LOCAL_FALLBACK_REPLY}\n\n[emotion:concerned]`;
+        providerUsed = "openrouter";
 
-          const retryChoice = minimalRetry.choices?.[0] as
-            | unknown
-            | undefined;
-          rawReply = extractContent(retryChoice);
-
-          logger.info("OpenRouter minimal retry completed", {
-            model: env.openRouterModel,
-            modelReturned: minimalRetry.model,
-            hasContent: Boolean(rawReply),
-          });
-
-          if (rawReply) {
-            providerUsed = "openrouter";
-            await recordProviderSuccess("openrouter");
+        if (wantsStream && onToken) {
+          for (const token of generatedReply.split(/(\s+)/)) {
+            if (token) onToken(token);
           }
-        } catch (retryError) {
-          const retryMessage =
-            retryError instanceof Error ? retryError.message : "Unknown OpenRouter retry error";
-          const respStatus = (retryError as any)?.response?.status ?? null;
-          const respBody = (retryError as any)?.response?.data ?? (retryError as any)?.response ?? null;
-          logger.error("OpenRouter minimal retry failed", { message: retryMessage, status: respStatus, body: respBody });
-          recordProviderFailure("openrouter", respStatus ?? null);
         }
       }
+
+      return generatedReply;
     }
 
-    if (!rawReply) {
-      logger.warn("All providers returned no content; using local fallback reply", {
-        userId,
-      });
-      rawReply = `${LOCAL_FALLBACK_REPLY}\n\n[emotion:concerned]`;
-      providerUsed = "openrouter";
-    }
+    async function finalizeChatTurn(rawReply: string) {
+      contextDebug.providerUsed = providerUsed;
 
-    contextDebug.providerUsed = providerUsed;
+      const parsedEmotion = parseEmotion(rawReply);
+      const preValidatedReply = validateAndFixResponse(parsedEmotion.clean, stabilityState);
+      let reply: string = String(compressAndCleanReply(preValidatedReply, userEmotionSignal.label) ?? "");
 
-    // ── 6. Parse emotion tag & Compress ──
-    const parsedEmotion = parseEmotion(rawReply);
-    
-    // Run structural validator + cleanup
-    const preValidatedReply = validateAndFixResponse(parsedEmotion.clean, stabilityState);
-    const reply = compressAndCleanReply(preValidatedReply, userEmotionSignal.label);
-    
-    await updateStabilityLastMode(userId, reply);
-    const assistantEmotionSignal: EmotionSignal = parsedEmotion.hasTag
-      ? {
-        label: parsedEmotion.emotion,
-        confidence: 0.88,
-        source: "model-tag",
+      if (previousAssistantReply) {
+        const normalizedCurrent = normalizeForComparison(reply);
+        const normalizedPrevious = normalizeForComparison(previousAssistantReply);
+        if (normalizedCurrent.length > 0 && normalizedCurrent === normalizedPrevious) {
+          logger.warn("Duplicate assistant reply detected; applying non-repeat rewrite", { userId });
+          reply = `You're not wrong to feel that. With people like this, I'd keep your circle smaller and give your energy only to people who are consistently real with you.`;
+        }
       }
-      : inferEmotionSignalFromText(reply);
 
-    // ── 7. Save EVA response to DB ──
-    await Message.create({
-      userId,
-      role: "eva",
-      content: reply,
-      emotion: assistantEmotionSignal.label,
-      emotionData: {
-        label: assistantEmotionSignal.label,
-        confidence: assistantEmotionSignal.confidence,
-        source: assistantEmotionSignal.source,
-        strategy: toneStrategy.name,
-      },
-      providerUsed,
-      contextMessages: chronological.length,
-    });
+      await updateStabilityLastMode(userId!, reply);
+      const assistantEmotionSignal: EmotionSignal = parsedEmotion.hasTag
+        ? {
+            label: parsedEmotion.emotion,
+            confidence: 0.88,
+            source: "model-tag",
+          }
+        : inferEmotionSignalFromText(reply);
 
-    logger.info("Chat response sent", {
-      userId,
-      replyLength: reply.length,
-      emotion: assistantEmotionSignal.label,
-      providerUsed,
-      contextDebug,
-    });
+      await Message.create({
+        userId,
+        role: "eva",
+        content: reply,
+        emotion: assistantEmotionSignal.label,
+        emotionData: {
+          label: assistantEmotionSignal.label,
+          confidence: assistantEmotionSignal.confidence,
+          source: assistantEmotionSignal.source,
+          strategy: toneStrategy.name,
+        },
+        providerUsed,
+        contextMessages: chronological.length,
+      });
 
-    const generationTimeMs = Math.round(performance.now() - startTimeMs);
+      logger.info("Chat response sent", {
+        userId,
+        replyLength: reply.length,
+        emotion: assistantEmotionSignal.label,
+        providerUsed,
+        contextDebug,
+      });
 
-    // ── 8. Log Structured ML Data ──
-    const trainingLog = await TrainingInteraction.create({
-      userId,
-      input: message,
-      predictedUserEmotion: userEmotionSignal.label,
-      reply,
-      replyEmotion: assistantEmotionSignal.label,
-      memoryUsed: memories.length > 0,
-      responseTimeMs: generationTimeMs,
-    });
+      const generationTimeMs = Math.round(performance.now() - startTimeMs);
 
-    const turnMeta = {
-      userId,
-      timestamp: new Date(),
-      replyMode: behaviorResult.replyMode,
-      toneStyle: behaviorResult.tone,
-      depthLevel: behaviorResult.depth,
-      conversationMode: modeResult.mode,
-      arcPhase,
-      subtextDetected: isLowSignal ? "low-signal" : null,
-      isLowSignal,
-      bondTier: bondPrompt.includes("CLOSE") ? "close" : bondPrompt.includes("COMFORTABLE") ? "comfortable" : bondPrompt.includes("WARMING") ? "warming" : "new",
-      bondScore: Number(user?.bondScore ?? 0.1),
-      emotionalMomentum: momentumScore > 0.15 ? "improving" : momentumScore < -0.15 ? "declining" : "stable",
-      moodAtTime: moodContext.currentMood,
-      userEmotion: userEmotionSignal.label,
-      userEmotionConfidence: userEmotionSignal.confidence,
-      replyEmotion: assistantEmotionSignal.label,
-      memoriesRetrieved: memories.length,
-      memoriesTriggered: triggeredMemories.length,
-      memoryKeysUsed: memories.map((memory) => String(memory.key ?? "fact")),
-      replyLength: reply.length,
-      responseTimeMs: generationTimeMs,
-      providerUsed,
-      coherenceOverrides: coherenceResult.overrides,
-    };
+      const trainingLog = await Promise.resolve(
+        TrainingInteraction.create({
+          userId,
+          input: message,
+          predictedUserEmotion: userEmotionSignal.label,
+          reply,
+          replyEmotion: assistantEmotionSignal.label,
+          memoryUsed: memories.length > 0,
+          responseTimeMs: generationTimeMs,
+        }),
+      ).catch(() => null);
 
-    void TurnAnalytics.create(turnMeta).catch((error) => {
-      logger.error("Failed to persist turn analytics", { error, userId });
-    });
+      const turnMeta = {
+        userId,
+        timestamp: new Date(),
+        replyMode: behaviorResult.replyMode,
+        toneStyle: behaviorResult.tone,
+        depthLevel: behaviorResult.depth,
+        conversationMode: modeResult.mode,
+        arcPhase,
+        subtextDetected: isLowSignal ? "low-signal" : null,
+        isLowSignal,
+        bondTier: bondPrompt.includes("CLOSE") ? "close" : bondPrompt.includes("COMFORTABLE") ? "comfortable" : bondPrompt.includes("WARMING") ? "warming" : "new",
+        bondScore: Number(user?.bondScore ?? 0.1),
+        emotionalMomentum: momentumScore > 0.15 ? "improving" : momentumScore < -0.15 ? "declining" : "stable",
+        moodAtTime: moodContext.currentMood,
+        userEmotion: userEmotionSignal.label,
+        userEmotionConfidence: userEmotionSignal.confidence,
+        replyEmotion: assistantEmotionSignal.label,
+        memoriesRetrieved: memories.length,
+        memoriesTriggered: triggeredMemories.length,
+        memoryKeysUsed: memories.map((memory) => String(memory.key ?? "fact")),
+        replyLength: reply.length,
+        responseTimeMs: generationTimeMs,
+        providerUsed,
+        coherenceOverrides: coherenceResult.overrides,
+      };
 
-    return NextResponse.json({
-      reply,
-      emotion: assistantEmotionSignal.label,
-      predictedUserEmotion: userEmotionSignal.label,
-      emotionConfidence: assistantEmotionSignal.confidence,
-      toneStrategy: toneStrategy.name,
-      contextMessages: chronological.length,
-      memoryUsed: memories.length,
-      historyCount: contextDebug.historyCount,
-      providerUsed,
-      contextDebug,
-      behavior: {
-        speechRate: assistantEmotionSignal.label === "sad" ? 0.85 : assistantEmotionSignal.label === "excited" ? 1.1 : 1.0,
-        pitch: assistantEmotionSignal.label === "sad" ? -2 : 0,
-        avatarMood: assistantEmotionSignal.label
-      },
-      interactionId: String(trainingLog._id)
-    });
+      void Promise.resolve(TurnAnalytics.create(turnMeta)).catch((error) => {
+        logger.error("Failed to persist turn analytics", { error, userId });
+      });
+
+      return {
+        reply,
+        emotion: assistantEmotionSignal.label,
+        predictedUserEmotion: userEmotionSignal.label,
+        emotionConfidence: assistantEmotionSignal.confidence,
+        toneStrategy: toneStrategy.name,
+        contextMessages: chronological.length,
+        memoryUsed: memories.length,
+        historyCount: contextDebug.historyCount,
+        providerUsed,
+        contextDebug,
+        behavior: {
+          speechRate: assistantEmotionSignal.label === "sad" ? 0.85 : assistantEmotionSignal.label === "excited" ? 1.1 : 1.0,
+          pitch: assistantEmotionSignal.label === "sad" ? -2 : 0,
+          avatarMood: assistantEmotionSignal.label,
+        },
+        interactionId: String(trainingLog?._id ?? Date.now()),
+      };
+    }
+
+    if (wantsStream) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (event: Parameters<typeof formatChatStreamEvent>[0]) => {
+            try {
+              logger.info("sse:send", { type: event.type, preview: (event.type === "token" ? String((event as any).delta).slice(0,120) : JSON.stringify((event as any).payload).slice(0,120)) });
+            } catch (e) {
+              // ignore logging failure
+            }
+            controller.enqueue(encoder.encode(formatChatStreamEvent(event)));
+          };
+
+          try {
+            const rawReply = await runOpenRouterGeneration((delta) => send({ type: "token", delta }));
+            const payload = await finalizeChatTurn(rawReply);
+            send({ type: "final", payload });
+          } catch (error) {
+            send({ type: "error", error: error instanceof Error ? error.message : "Streaming failed." });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new NextResponse(stream, {
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    const rawReply = await runOpenRouterGeneration();
+    const payload = await finalizeChatTurn(rawReply);
+    return NextResponse.json(payload);
   } catch (error) {
     return toErrorResponse(error);
   }
 }
+

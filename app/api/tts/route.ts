@@ -3,6 +3,8 @@ import OpenAI from "openai";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { AppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { createHash } from "crypto";
+import { cacheGet, cacheSet } from "@/lib/redis";
 
 /* ── Provider config ──────────────────────────────────────── */
 
@@ -99,6 +101,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
     const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
 
+    // ── Redis TTS Cache Check ──
+    const voiceForHash = payload.voiceId?.trim() || requestedProvider;
+    const cacheKey = `tts:${createHash("sha256").update(`${text}:${voiceForHash}:${requestedProvider}`).digest("hex")}`;
+    const cachedAudio = await cacheGet<string>(cacheKey);
+    if (cachedAudio) {
+      logger.info("TTS cache hit", { cacheKey: cacheKey.slice(0, 20) });
+      return NextResponse.json(
+        { audioContent: cachedAudio },
+        {
+          status: 200,
+          headers: {
+            "Cache-Control": "no-store",
+            "X-Eva-Tts-Provider": "cache",
+          },
+        }
+      );
+    }
+
     let audioBase64: string;
     let providerUsed: string;
     let modelUsed: string;
@@ -137,7 +157,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       providerUsed = "openai";
     }
 
-    logger.info("TTS audio generated", { provider: providerUsed, length: audioBase64.length });
+    // Cache the generated audio in Redis for 24 hours
+    await cacheSet(cacheKey, audioBase64, 86400);
+    logger.info("TTS audio generated & cached", { provider: providerUsed, length: audioBase64.length });
 
     return NextResponse.json(
       { audioContent: audioBase64 },

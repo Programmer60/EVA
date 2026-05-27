@@ -60,9 +60,8 @@ function VrmModel({
     if (gltf.userData.vrm) {
       const vrmInst = gltf.userData.vrm as VRM
       
-      // Newer VRM models are already facing the camera (+Z). 
-      // If she ever faces backward again, change this 0 to Math.PI
-      vrmInst.scene.rotation.y = 0;
+      // Fix VRM model facing backward by rotating 180 degrees (Math.PI)
+      vrmInst.scene.rotation.y = Math.PI;
 
       // Fix T-Pose: Relax the arms downwards procedurally
       const leftArm = vrmInst.humanoid?.getNormalizedBoneNode("leftUpperArm")
@@ -87,15 +86,20 @@ function VrmModel({
     const root = vrm.scene
     if (root) {
       root.position.y = Math.sin(t * 1.4) * 0.01 // Gentle breathing bob
-      root.rotation.y = Math.sin(t * 0.35) * 0.05 + (gaze?.x ?? 0) * 0.1 // Sway
+      root.rotation.y = Math.PI + Math.sin(t * 0.35) * 0.05 + (gaze?.x ?? 0) * 0.1 // Sway (preserve 180 deg base rotation)
       root.rotation.z = Math.sin(t * 0.8) * 0.01 // Slight tilt
     }
 
-    // Apply specific head bone rotation if available
+    // Apply specific head bone rotation if available (but let VRMLookAt handle primary gaze)
     const headNode = vrm.humanoid?.getNormalizedBoneNode("head")
     if (headNode) {
-      headNode.rotation.y = (gaze?.x ?? 0) * 0.15
+      // Subtle additive head drift, but keep eyes focused on camera
       headNode.rotation.x = headDrift * 0.03
+    }
+
+    // Enable eye contact with user
+    if (vrm.lookAt) {
+      vrm.lookAt.target = state.camera;
     }
 
     // 3. Expressions (BlendShapes)
@@ -161,11 +165,11 @@ function VrmModel({
         else setBoth("o", "oh", mouthOpen)
       }
 
-      // Apply emotion
-      if (emotion === "happy") setBoth("joy", "happy", 0.8)
+      // Apply emotion (use "fun"/"relaxed" for happy so eyes stay open during conversation)
+      if (emotion === "happy") setBoth("fun", "relaxed", 0.7)
       else if (emotion === "sad") setBoth("sorrow", "sad", 0.6)
       else if (emotion === "thoughtful" || emotion === "curious") setBoth("neutral", "neutral", 0.8)
-      else if (emotion === "excited") setBoth("fun", "relaxed", 0.8)
+      else if (emotion === "excited") setBoth("joy", "happy", 0.5) // Squint slightly only when fully excited
       else setBoth("neutral", "neutral", 0.5) // Default slight neutral expression
       
       // Additional expression overrides
@@ -191,11 +195,11 @@ export default function AvatarCanvas(props: AvatarCanvasProps) {
     : "/CuteGirl.vrm"
 
   return (
-    <div className="eva-avatar-3d-shell">
-      <div className="eva-avatar-3d-stage">
+    <div className="absolute inset-0 w-full h-full">
+      <div className="w-full h-full">
         <CanvasErrorBoundary>
-          {/* Framed closely on the face/shoulders to hide the T-pose arms */}
-          <Canvas camera={{ fov: 25, position: [0, 1.48, 0.8] }} dpr={[1, 1.5]} gl={{ antialias: true, alpha: true }}>
+          {/* Framed to show head, shoulders, and upper chest (crops out awkward T-pose arms) */}
+          <Canvas camera={{ fov: 25, position: [0, 1.42, 0.95] }} dpr={[1, 1.5]} gl={{ antialias: true, alpha: true }}>
             <ambientLight intensity={1.0} />
             <directionalLight position={[1, 1, 1]} intensity={2.0} />
             <directionalLight position={[-1, 0, -1]} intensity={0.5} color="#abcdef" />
@@ -203,7 +207,7 @@ export default function AvatarCanvas(props: AvatarCanvasProps) {
             
             <VrmModel {...props} modelUrl={modelUrl} />
             
-            <OrbitControls enableZoom={false} enablePan={false} target={[0, 1.38, 0]} maxPolarAngle={Math.PI / 1.8} minPolarAngle={Math.PI / 3} />
+            <OrbitControls enableZoom={false} enablePan={false} target={[0, 1.35, 0]} maxPolarAngle={Math.PI / 1.8} minPolarAngle={Math.PI / 3} />
           </Canvas>
         </CanvasErrorBoundary>
       </div>

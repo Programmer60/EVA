@@ -1,4 +1,5 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
+import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 
 // In-memory cache for fast heuristic topic extraction (resets on server restart, good for Vercel edge/lambdas short-term memory)
@@ -32,29 +33,41 @@ function extractHeuristicTopic(input: string): string | null {
  * Tier-2 LLM-based topic extraction for complex/emotional narratives.
  */
 async function extractLLMTopic(input: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = env.openRouterApiKey;
   if (!apiKey) return "general"; // Fallback to general if no API key
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
-    const prompt = `Extract the PRIMARY conversational topic from the user input.
-Rules:
-- Output ONLY 1-3 words. No punctuation.
-- Focus on the emotional/theme level, not surface keywords (e.g. "trauma recovery", "academic stress", "learning struggle").
-
-Input:
-"${input}"`;
-
-    const response = await ai.models.generateContent({
-      model: "google/gemini-2.0-flash-exp:free",
-      contents: prompt,
-      config: {
-        temperature: 0.1, // Keep it highly deterministic
-        maxOutputTokens: 10,
-      }
+    const client = new OpenAI({
+      apiKey,
+      baseURL: "https://openrouter.ai/api/v1",
     });
 
-    const topic = response.text?.trim().toLowerCase().replace(/[^a-z ]/g, "") || "general";
+    const response = await client.chat.completions.create({
+      model: env.openRouterModel,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Extract the PRIMARY conversational topic from the user input. Output only 1-3 lowercase words with no punctuation. Focus on the emotional/theme level, not surface keywords.",
+        },
+        { role: "user", content: input },
+      ],
+      temperature: 0.1,
+      max_tokens: 10,
+    });
+
+    const message = response.choices?.[0]?.message?.content;
+    const topic = Array.isArray(message)
+      ? message
+          .map((part) => (typeof part === "string" ? part : part?.text ?? ""))
+          .join(" ")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z ]/g, "")
+      : typeof message === "string"
+        ? message.trim().toLowerCase().replace(/[^a-z ]/g, "")
+        : "general";
+
     return topic;
   } catch (error) {
     logger.error("LLM Topic Extraction failed", { error: error instanceof Error ? error.message : "Unknown error" });

@@ -4,6 +4,7 @@ type AppEnv = {
   geminiModel: string;
   openRouterApiKey: string | null;
   openRouterModel: string;
+  openRouterStreamModel: string;
   elevenLabsApiKey: string | null;
   databaseUrl: string | null;
   mongodbUri: string | null;
@@ -25,7 +26,9 @@ export const env: AppEnv = {
   geminiModel: clean(process.env.GEMINI_MODEL) ?? "gemini-2.0-flash",
   openRouterApiKey: clean(process.env.OPENROUTER_API_KEY),
   openRouterModel:
-    clean(process.env.OPENROUTER_MODEL) ?? "mistralai/mistral-7b-instruct",
+    clean(process.env.OPENROUTER_MODEL) ?? "openai/gpt-4o-mini",
+  openRouterStreamModel:
+    clean(process.env.OPENROUTER_STREAM_MODEL) ?? clean(process.env.OPENROUTER_MODEL) ?? "openai/gpt-4o-mini",
   elevenLabsApiKey: clean(process.env.ELEVENLABS_API_KEY),
   databaseUrl: clean(process.env.DATABASE_URL),
   mongodbUri: clean(process.env.MONGODB_URI),

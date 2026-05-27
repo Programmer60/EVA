@@ -3,7 +3,6 @@ import { NextRequest } from "next/server";
 
 // Top-level stubs so Vitest hoisting/mocking works predictably
 const createMock = vi.fn();
-const geminiGenerateMock = vi.fn();
 
 vi.mock("@/lib/mongodb", () => ({ connectDB: vi.fn() }));
 vi.mock("@/lib/metrics", () => ({
@@ -17,6 +16,9 @@ vi.mock("@/lib/providerHealth", () => ({
   recordProviderFailure: vi.fn(),
   recordProviderSuccess: vi.fn(),
   isProviderHealthy: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@clerk/nextjs/server", () => ({
+  auth: vi.fn().mockResolvedValue({ userId: "u-fallback" }),
 }));
 
 class QueryStub {
@@ -76,19 +78,13 @@ vi.mock("@/lib/models/MoodState", () => ({ default: noopModel }));
 
 vi.mock("openai", () => {
   class APIError extends Error {}
-  const defaultFn = vi.fn().mockImplementation(() => ({ chat: { completions: { create: createMock } } }));
+  const defaultFn = vi.fn(function OpenAI() {
+    return { chat: { completions: { create: createMock } } };
+  });
   // Attach APIError to the default export so `OpenAI.APIError` checks work
   (defaultFn as any).APIError = APIError;
   return { default: defaultFn };
 });
-vi.mock("@google/genai", () => ({
-  GoogleGenAI: class {
-    models: any;
-    constructor() {
-      this.models = { generateText: geminiGenerateMock, generateContent: geminiGenerateMock };
-    }
-  },
-}));
 
 function buildPostRequest(payload: unknown): NextRequest {
   return new NextRequest("http://localhost:3000/api/chat", {
@@ -106,7 +102,7 @@ describe("POST /api/chat fallback behavior", () => {
     delete process.env.OPENROUTER_API_KEY;
   });
 
-  it("falls back to local reply when OpenRouter errors and no Gemini configured", async () => {
+  it("falls back to local reply when OpenRouter errors", async () => {
     process.env.OPENROUTER_API_KEY = "ok";
 
     // Configure top-level OpenAI mock to fail
@@ -119,20 +115,5 @@ describe("POST /api/chat fallback behavior", () => {
     const body = await res.json();
     expect(body.reply).toMatch(/temporary provider issue/i);
     expect(body.providerUsed === null || body.providerUsed === "openrouter").toBeTruthy();
-  }, 20000);
-
-  it("uses Gemini when OPENROUTER not configured and GEMINI_API_KEY present", async () => {
-    process.env.GEMINI_API_KEY = "gemini-key";
-
-    // Configure top-level Gemini mock to return a simple candidate
-    geminiGenerateMock.mockReset();
-    geminiGenerateMock.mockResolvedValue({ candidates: [{ content: "Gemini says hi" }] });
-
-    const route = await import("@/app/api/chat/route");
-    const res = await route.POST(buildPostRequest({ userId: "u-gemini", message: "use gemini" }));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.reply).toMatch(/Gemini says hi/i);
-    expect(body.providerUsed).toBe("gemini");
   }, 20000);
 });

@@ -132,7 +132,7 @@ async function seedFromLifeEvents(userId: string, events: LifeEventLike[]): Prom
     const upserted = await LifeArc.findOneAndUpdate(
       { userId, arcKey },
       { $set: { ...promptBase, promptCue: "" } },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: 'after' },
     );
 
     const snapshot: LifeArcSnapshot = {

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 
 type MemoryItem = {
   id: string;
@@ -34,27 +35,8 @@ type MemoryResponse = {
   memories: MemoryItem[];
 };
 
-const USER_ID_STORAGE_KEY = "eva_user_id";
-
-function getOrCreateUserId(): string {
-  if (typeof window === "undefined") {
-    return "anonymous";
-  }
-
-  const existing = window.localStorage.getItem(USER_ID_STORAGE_KEY);
-  if (existing && existing.trim().length > 0) {
-    return existing;
-  }
-
-  const created = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? `user-${crypto.randomUUID()}`
-    : `user-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
-  window.localStorage.setItem(USER_ID_STORAGE_KEY, created);
-  return created;
-}
-
 export default function ProfilePage() {
-  const [userId, setUserId] = useState("anonymous");
+  const { userId } = useAuth();
   const [profile, setProfile] = useState<UserProfile>(null);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,12 +51,7 @@ export default function ProfilePage() {
   const [editSource, setEditSource] = useState("chat");
 
   useEffect(() => {
-    const uid = getOrCreateUserId();
-    setUserId(uid);
-  }, []);
-
-  useEffect(() => {
-    if (!userId || userId === "anonymous") {
+    if (!userId) {
       return;
     }
 
@@ -86,7 +63,7 @@ export default function ProfilePage() {
 
       try {
         const response = await fetch(
-          `/api/memory?userId=${encodeURIComponent(userId)}&limit=100&includeProfile=true`,
+          `/api/memory?limit=100&includeProfile=true`,
           {
             signal: controller.signal,
             cache: "no-store",

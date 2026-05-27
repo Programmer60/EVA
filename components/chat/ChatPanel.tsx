@@ -1,8 +1,11 @@
 "use client";
 
+import { Brain, FileText, Download, X, Bot, RefreshCw } from "lucide-react";
+import { useAuth } from "@clerk/nextjs";
 import { initSharedAudioContext } from "@/lib/avatar/lipSyncAnalyzer";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { getTypingDelay, chunkReply, presenceSleep } from "@/lib/presence/presenceEngine";
+import { consumeChatStream } from "@/lib/chat/streaming";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -19,13 +22,13 @@ type ChatApiResponse = {
   contextMessages?: number;
   historyCount?: number;
   memoryUsed?: number;
-  providerUsed?: "gemini" | "openrouter" | null;
+  providerUsed?: "openrouter" | null;
   contextDebug?: {
     historyCount: number;
     memoryUsed: number;
     memoryCandidatesCount: number;
     memoryKeysUsed: string[];
-    providerUsed: "gemini" | "openrouter" | null;
+    providerUsed: "openrouter" | null;
     bondScore?: number;
   };
   behavior?: {
@@ -78,25 +81,6 @@ type DebugSnapshot = {
   memoryFacts: MemoryDebugEntry[];
 };
 
-const USER_ID_STORAGE_KEY = "eva_user_id";
-
-function getOrCreateUserId(): string {
-  if (typeof window === "undefined") {
-    return "anonymous";
-  }
-
-  const existing = window.localStorage.getItem(USER_ID_STORAGE_KEY);
-  if (existing && existing.trim().length > 0) {
-    return existing;
-  }
-
-  const created = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? `user-${crypto.randomUUID()}`
-    : `user-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
-  window.localStorage.setItem(USER_ID_STORAGE_KEY, created);
-  return created;
-}
-
 function formatProfileNameFromUserId(userId: string): string {
   if (!userId || userId === "anonymous") {
     return "Anonymous";
@@ -119,7 +103,7 @@ export function ChatPanel() {
   const [snapshotStatus, setSnapshotStatus] = useState<string | null>(null);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [currentEmotion, setCurrentEmotion] = useState<string>("neutral");
-  const [userId, setUserId] = useState<string>("anonymous");
+  const { userId } = useAuth();
   const [profileName, setProfileName] = useState<string>("Anonymous");
   const [memoryFacts, setMemoryFacts] = useState<MemoryDebugEntry[]>([]);
   const [memoryProfile, setMemoryProfile] = useState<MemoryDebugResponse["profile"]>(null);
@@ -207,16 +191,22 @@ export function ChatPanel() {
     }
   }, []);
 
+  // Auto-fetch history on mount
   useEffect(() => {
-    const uid = getOrCreateUserId();
-    setUserId(uid);
-    setProfileName(formatProfileNameFromUserId(uid));
+    async function fetchHistory() {
+      setIsLoadingHistory(true);
+      setError(null);
 
-    async function loadHistory() {
+      // Wait for auth to hydrate
+      if (!userId) {
+        setIsLoadingHistory(false);
+        return;
+      }
+      
+      setProfileName(formatProfileNameFromUserId(userId));
+
       try {
-        const res = await fetch(
-          `/api/history?limit=20&userId=${encodeURIComponent(uid)}`,
-        );
+        const res = await fetch(`/api/history?limit=20&userId=${encodeURIComponent(userId)}`);
         if (!res.ok) {
           throw new Error("Could not load history.");
         }
@@ -244,7 +234,7 @@ export function ChatPanel() {
         }
 
         if (shouldTriggerInitiative) {
-          void triggerProactiveGreeting(uid);
+          void triggerProactiveGreeting(userId);
         }
 
       } catch {
@@ -254,12 +244,12 @@ export function ChatPanel() {
       }
     }
 
-    loadHistory();
-  }, [triggerProactiveGreeting]);
+    fetchHistory();
+  }, [triggerProactiveGreeting, userId]);
 
   // Polling Effect for Inactivity
   useEffect(() => {
-    if (userId === "anonymous" || isLoadingHistory || isLoading) return;
+    if (!userId || isLoadingHistory || isLoading) return;
 
     const timer = setInterval(() => {
       if (hasTriggeredInitiative.current) return;
@@ -273,7 +263,7 @@ export function ChatPanel() {
   }, [userId, isLoadingHistory, isLoading, triggerProactiveGreeting]);
 
   useEffect(() => {
-    if (!showDebugPanel || userId === "anonymous") {
+    if (!showDebugPanel || !userId) {
       return;
     }
 
@@ -283,7 +273,7 @@ export function ChatPanel() {
 
       try {
         const response = await fetch(
-          `/api/memory?userId=${encodeURIComponent(userId)}&limit=30&includeProfile=true`,
+          `/api/memory?userId=${encodeURIComponent(userId as string)}&limit=30&includeProfile=true`,
         );
         const data = (await response.json()) as MemoryDebugResponse | { error?: string };
 
@@ -329,44 +319,146 @@ export function ChatPanel() {
       }).catch(() => { /* silent */ });
     }
 
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
+    const timeoutId = window.setTimeout(() => abortController.abort(), 45000);
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, userId }),
-        signal: AbortSignal.timeout(45000), // 45 second timeout
+        body: JSON.stringify({ message, userId, stream: true }),
+        signal: abortController.signal,
       });
+      clearTimeout(timeoutId);
 
-      const data = (await response.json()) as ChatApiResponse | { error?: string };
-
-      if (!response.ok || !("reply" in data)) {
-        const errorMessage = "error" in data ? data.error : undefined;
-        throw new Error(errorMessage || "Request failed.");
+      if (!response.ok) {
+        const errorData = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(errorData?.error || "Request failed.");
       }
 
-      const replyText = data.reply;
-      const replyEmotion = data.emotion ?? "neutral";
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream")) {
+        let streamStarted = false;
+        const finalData = (await consumeChatStream(response, {
+          onToken: (delta) => {
+            if (!streamStarted) {
+              streamStarted = true;
+              setPresencePhase("streaming");
+              emitPresenceChange("streaming");
+              setIsLoading(false);
+            }
+            setStreamingContent((prev) => prev + delta);
+          },
+        })) as ChatApiResponse;
 
-      setCurrentEmotion(replyEmotion);
-      if (data.contextDebug) setLastContextDebug(data.contextDebug);
-      setFailedMessage(null);
-      setIsLoading(false);
+        const replyText = finalData.reply;
+        const replyEmotion = finalData.emotion ?? "neutral";
 
-      // ── PRESENCE LAYER: THINKING Phase ──
-      const thinkDelay = getTypingDelay(replyText, replyEmotion);
-      setPresencePhase("thinking");
-      emitPresenceChange("thinking");
+        setCurrentEmotion(replyEmotion);
+        if (finalData.contextDebug) setLastContextDebug(finalData.contextDebug as ChatApiResponse["contextDebug"]);
+        setFailedMessage(null);
+        setIsLoading(false);
 
-      const abortController = new AbortController();
-      streamAbortRef.current = abortController;
+        if (!streamStarted) {
+          setPresencePhase("streaming");
+          emitPresenceChange("streaming");
+        }
 
-      try {
-        await presenceSleep(thinkDelay, abortController.signal);
-      } catch {
-        // Interrupted during thinking — flush instantly
+        setStreamingContent("");
         setPresencePhase("idle");
         emitPresenceChange("idle");
+        streamAbortRef.current = null;
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: replyText,
+            emotion: finalData.predictedUserEmotion ?? replyEmotion,
+            interactionId: finalData.interactionId,
+          },
+        ]);
+
+        lastActivityRef.current = Date.now();
+        emitTtsEvent(replyText, replyEmotion, finalData.behavior);
+
+      if (showDebugPanel) {
+        const memoryRes = await fetch(
+          `/api/memory?userId=${encodeURIComponent(userId as string)}&limit=30`,
+        );
+        const memoryData = (await memoryRes.json()) as MemoryDebugResponse | { error?: string };
+        if (memoryRes.ok && "memories" in memoryData) {
+          setMemoryFacts(memoryData.memories);
+        }
+      }
+      } else {
+        const data = (await response.json()) as ChatApiResponse | { error?: string };
+
+        if (!("reply" in data)) {
+          const errorMessage = "error" in data ? data.error : undefined;
+          throw new Error(errorMessage || "Request failed.");
+        }
+
+        const replyText = data.reply;
+        const replyEmotion = data.emotion ?? "neutral";
+
+        setCurrentEmotion(replyEmotion);
+        if (data.contextDebug) setLastContextDebug(data.contextDebug);
+        setFailedMessage(null);
+        setIsLoading(false);
+
+        const thinkDelay = getTypingDelay(replyText, replyEmotion);
+        setPresencePhase("thinking");
+        emitPresenceChange("thinking");
+
+        try {
+          await presenceSleep(thinkDelay, abortController.signal);
+        } catch {
+          setPresencePhase("idle");
+          emitPresenceChange("idle");
+          setStreamingContent("");
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: replyText,
+              emotion: data.predictedUserEmotion ?? replyEmotion,
+              interactionId: data.interactionId,
+            },
+          ]);
+          lastActivityRef.current = Date.now();
+          emitTtsEvent(replyText, replyEmotion, data.behavior);
+          return;
+        }
+
+        setPresencePhase("streaming");
+        emitPresenceChange("streaming");
+        const chunks = chunkReply(replyText, replyEmotion);
+        let accumulated = "";
+
+        for (const chunk of chunks) {
+          if (abortController.signal.aborted) break;
+
+          if (!chunk.isPause) {
+            accumulated += (accumulated ? " " : "") + chunk.text;
+            setStreamingContent(accumulated);
+          }
+
+          if (chunk.delayAfter > 0) {
+            try {
+              await presenceSleep(chunk.delayAfter, abortController.signal);
+            } catch {
+              break;
+            }
+          }
+        }
+
         setStreamingContent("");
+        setPresencePhase("idle");
+        emitPresenceChange("idle");
+        streamAbortRef.current = null;
+
         setMessages((prev) => [
           ...prev,
           {
@@ -376,60 +468,18 @@ export function ChatPanel() {
             interactionId: data.interactionId,
           },
         ]);
+
         lastActivityRef.current = Date.now();
         emitTtsEvent(replyText, replyEmotion, data.behavior);
-        return;
-      }
 
-      // ── PRESENCE LAYER: STREAMING Phase ──
-      setPresencePhase("streaming");
-      emitPresenceChange("streaming");
-      const chunks = chunkReply(replyText, replyEmotion);
-      let accumulated = "";
-
-      for (const chunk of chunks) {
-        if (abortController.signal.aborted) break;
-
-        if (!chunk.isPause) {
-          accumulated += (accumulated ? " " : "") + chunk.text;
-          setStreamingContent(accumulated);
-        }
-
-        if (chunk.delayAfter > 0) {
-          try {
-            await presenceSleep(chunk.delayAfter, abortController.signal);
-          } catch {
-            break; // Interrupted — will flush below
+        if (showDebugPanel) {
+          const memoryRes = await fetch(
+            `/api/memory?userId=${encodeURIComponent(userId as string)}&limit=30`,
+          );
+          const memoryData = (await memoryRes.json()) as MemoryDebugResponse | { error?: string };
+          if (memoryRes.ok && "memories" in memoryData) {
+            setMemoryFacts(memoryData.memories);
           }
-        }
-      }
-
-      // Streaming complete (or interrupted) — commit final message
-      setStreamingContent("");
-      setPresencePhase("idle");
-      emitPresenceChange("idle");
-      streamAbortRef.current = null;
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: replyText, // always commit the FULL reply
-          emotion: data.predictedUserEmotion ?? replyEmotion,
-          interactionId: data.interactionId,
-        },
-      ]);
-
-      lastActivityRef.current = Date.now();
-      emitTtsEvent(replyText, replyEmotion, data.behavior);
-
-      if (showDebugPanel) {
-        const memoryRes = await fetch(
-          `/api/memory?userId=${encodeURIComponent(userId)}&limit=30`,
-        );
-        const memoryData = (await memoryRes.json()) as MemoryDebugResponse | { error?: string };
-        if (memoryRes.ok && "memories" in memoryData) {
-          setMemoryFacts(memoryData.memories);
         }
       }
     } catch (requestError) {
@@ -440,6 +490,8 @@ export function ChatPanel() {
       setError(messageText);
       setFailedMessage(message);
       setIsLoading(false);
+      setPresencePhase("idle");
+      emitPresenceChange("idle");
     }
   }, [showDebugPanel, userId]);
 

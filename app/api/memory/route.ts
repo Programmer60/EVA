@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { connectDB } from "@/lib/mongodb";
 import Memory from "@/lib/models/Memory";
 import { AppError, toErrorResponse } from "@/lib/errors";
@@ -18,9 +19,6 @@ type MemoryRecord = {
   deletedAt?: unknown;
 };
 
-function resolveUserId(request: NextRequest, bodyUserId?: string): string {
-  return (bodyUserId ?? request.nextUrl.searchParams.get("userId") ?? "").trim();
-}
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
@@ -28,7 +26,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       throw new AppError("Memory debug endpoint is disabled in production.", 403);
     }
 
-    const userId = request.nextUrl.searchParams.get("userId") ?? "anonymous";
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const rawLimit = Number(request.nextUrl.searchParams.get("limit") ?? "25");
     const includeProfile = request.nextUrl.searchParams.get("includeProfile") === "true";
     const limit = Number.isFinite(rawLimit)
@@ -77,7 +78,10 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       importance?: number;
       source?: string;
     };
-    const userId = resolveUserId(request, body.userId);
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const memoryId = String(body.memoryId ?? "").trim();
 
     if (!userId) {
@@ -114,7 +118,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
           lastAccessed: new Date(),
         },
       },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
 
     if (!updated) {
@@ -146,7 +150,10 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     }
 
     const body = request.method === "DELETE" ? await request.json().catch(() => ({} as Record<string, unknown>)) : {};
-    const userId = resolveUserId(request, typeof body.userId === "string" ? body.userId : undefined);
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const memoryId = String((typeof body.memoryId === "string" ? body.memoryId : request.nextUrl.searchParams.get("memoryId")) ?? "").trim();
 
     if (!userId) {
@@ -161,7 +168,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     const deleted = await Memory.findOneAndUpdate(
       { _id: memoryId, userId, deletedAt: null },
       { $set: { deletedAt: new Date() } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
 
     if (!deleted) {

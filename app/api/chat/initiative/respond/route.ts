@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { toErrorResponse } from "@/lib/errors";
 import { connectDB } from "@/lib/mongodb";
 import InitiativeLog from "@/lib/models/InitiativeLog";
@@ -11,9 +12,9 @@ import { logger } from "@/lib/logger";
  */
 export async function PATCH(request: NextRequest) {
   try {
-    const { userId } = await request.json();
+    const { userId } = await auth();
     if (!userId) {
-      return NextResponse.json({ error: "userId is required" }, { status: 400 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     await connectDB();
@@ -32,7 +33,7 @@ export async function PATCH(request: NextRequest) {
           userRespondedAt: new Date(),
         },
       },
-      { sort: { sentAt: -1 }, new: true },
+      { sort: { sentAt: -1 }, returnDocument: 'after' },
     );
 
     if (updated) {

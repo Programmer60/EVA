@@ -341,39 +341,17 @@ export function AvatarPanel() {
   };
 
   return (
-    <section className="eva-card eva-avatar-card">
-      <div className="eva-section-header">
-        <h2>EVA</h2>
-        <span className="eva-presence-indicator" data-state={presenceState}>
-          {presenceLabels[presenceState]}
-        </span>
-      </div>
-
-      <div
-        ref={containerRef}
-        className={`eva-avatar-container ${presenceState === "thinking" ? "eva-avatar-thinking" : ""} ${renderedSpeaking ? "eva-avatar-speaking" : ""}`}
-        style={{
-          background: `radial-gradient(circle at 50% 45%, ${ambientGlow}, transparent 70%)`,
-        }}
-      >
-        <div className="eva-face-wrapper">
-          <Suspense
-            fallback={
-              <EvaFace
-                expression={renderedExpr}
-                gaze={renderedGaze}
-                isBlinking={renderedBlink}
-                isSpeaking={renderedSpeaking}
-                breatheScale={renderedBreathe}
-                browDrift={renderedBrowDrift}
-                headDrift={renderedHeadDrift}
-              />
-            }
-          >
-            {/* Dynamically load the 3D avatar canvas (client-only) */}
-            {/** Use top-level dynamic import to avoid server/client mismatch */}
-            <DynamicAvatarCanvas
-              emotion={currentEmotion}
+    <div
+      ref={containerRef}
+      className={`relative w-full h-[650px] min-h-[600px] flex items-center justify-center transition-all duration-700 ${presenceState === "thinking" ? "scale-95 opacity-80" : ""} ${renderedSpeaking ? "scale-105" : ""}`}
+      style={{
+        background: `radial-gradient(circle at 50% 50%, ${ambientGlow}, transparent 70%)`,
+      }}
+    >
+      <div className="absolute inset-0 flex items-center justify-center z-10 drop-shadow-2xl">
+        <Suspense
+          fallback={
+            <EvaFace
               expression={renderedExpr}
               gaze={renderedGaze}
               isBlinking={renderedBlink}
@@ -382,10 +360,22 @@ export function AvatarPanel() {
               browDrift={renderedBrowDrift}
               headDrift={renderedHeadDrift}
             />
-          </Suspense>
-        </div>
+          }
+        >
+          {/* Dynamically load the 3D avatar canvas (client-only) */}
+          <DynamicAvatarCanvas
+            emotion={currentEmotion}
+            expression={renderedExpr}
+            gaze={renderedGaze}
+            isBlinking={renderedBlink}
+            isSpeaking={renderedSpeaking}
+            breatheScale={renderedBreathe}
+            browDrift={renderedBrowDrift}
+            headDrift={renderedHeadDrift}
+          />
+        </Suspense>
       </div>
-    </section>
+    </div>
   );
 }
 
