@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import textToSpeech from "@google-cloud/text-to-speech";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { AppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { createHash } from "crypto";
@@ -12,14 +12,14 @@ const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const DEFAULT_TTS_VOICE = "alloy";
 const MAX_TEXT_LENGTH = 1200;
 
-// Google Cloud defaults
-const DEFAULT_GOOGLE_VOICE = "en-US-Journey-F";
-const DEFAULT_GOOGLE_LANG = "en-US";
+
+// ElevenLabs defaults — "Rachel" voice (warm, calm female voice)
+const DEFAULT_ELEVENLABS_VOICE = "21m00Tcm4TlvDq8ikWAM";
+const DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2";
 
 export const runtime = "nodejs";
 
-// Automatically uses your newly authenticated gcloud credentials
-const googleTtsClient = new textToSpeech.TextToSpeechClient();
+
 
 /* ── Types ────────────────────────────────────────────────── */
 
@@ -27,42 +27,39 @@ type TtsPayload = {
   text?: string;
   voiceId?: string;
   model?: string;
-  provider?: "openai" | "google";
+  provider?: "openai" | "elevenlabs";
 };
 
-/* ── Google Cloud TTS ──────────────────────────────────────── */
+/* ── ElevenLabs TTS ──────────────────────────────────────── */
 
-async function generateGoogleTts(
+async function generateElevenLabsTts(
   text: string,
   voiceId: string,
+  model: string,
+  apiKey: string,
 ): Promise<Buffer> {
-  try {
-    const requestPayload = {
-      input: { text: text },
-      voice: { languageCode: DEFAULT_GOOGLE_LANG, name: voiceId },
-      audioConfig: { audioEncoding: "MP3" as const },
-    };
+  const client = new ElevenLabsClient({ apiKey });
 
-    const [response] = await googleTtsClient.synthesizeSpeech(requestPayload);
-    
-    if (!response.audioContent) {
-      throw new Error("No audio content returned from Google Cloud TTS.");
-    }
-    
-    // The SDK can return a base64 string or a Uint8Array depending on transport
-    if (typeof response.audioContent === "string") {
-      return Buffer.from(response.audioContent, "base64");
-    } else {
-      return Buffer.from(response.audioContent);
-    }
-    
-  } catch (error: any) {
-    logger.error("Google Cloud TTS failed", {
-      error: error.message || error,
-    });
-    throw new AppError("Google Cloud TTS failed: " + (error.message || error), 500);
+  const audioStream = await client.textToSpeech.convert(voiceId, {
+    text,
+    model_id: model,
+    output_format: "mp3_44100_128",
+    voice_settings: {
+      stability: 0.5,
+      similarity_boost: 0.8,
+      style: 0.2,
+      use_speaker_boost: true,
+    },
+  });
+
+  // Collect all chunks from the stream into a buffer
+  const chunks: Buffer[] = [];
+  for await (const chunk of audioStream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
+  return Buffer.concat(chunks);
 }
+
 
 /* ── OpenAI TTS ──────────────────────────────────────────── */
 
@@ -124,18 +121,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     let modelUsed: string;
     let voiceUsed: string;
 
-    if (requestedProvider === "google") {
-      // ── Google Cloud path ──
+    if (requestedProvider === "elevenlabs") {
+      // ── ElevenLabs path ──
+      if (!elevenLabsApiKey) {
+        throw new AppError("Missing ELEVENLABS_API_KEY.", 503);
+      }
+
       voiceUsed = payload.voiceId?.trim() ||
-        process.env.GOOGLE_TTS_VOICE?.trim() ||
-        DEFAULT_GOOGLE_VOICE;
-      modelUsed = "journey";
+        process.env.ELEVENLABS_VOICE_ID?.trim() ||
+        DEFAULT_ELEVENLABS_VOICE;
+      modelUsed = payload.model?.trim() ||
+        process.env.ELEVENLABS_MODEL?.trim() ||
+        DEFAULT_ELEVENLABS_MODEL;
 
-      logger.info("Google Cloud TTS request", { voiceId: voiceUsed, textLength: text.length });
+      logger.info("ElevenLabs TTS request", { voiceId: voiceUsed, model: modelUsed, textLength: text.length });
 
-      const audioBuffer = await generateGoogleTts(text, voiceUsed);
+      const audioBuffer = await generateElevenLabsTts(text, voiceUsed, modelUsed, elevenLabsApiKey);
       audioBase64 = audioBuffer.toString("base64");
-      providerUsed = "google";
+      providerUsed = "elevenlabs";
 
     } else {
       // ── OpenAI path (default) ──

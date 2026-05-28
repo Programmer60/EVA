@@ -4,20 +4,35 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Mic, Play, Square, Volume2, Settings2 } from "lucide-react";
-import { speakWithFallback, stopAll as ttsStopAll, type VoiceBehavior } from "@/lib/audio/ttsManager";
+import { speakWithFallback, stopAll as ttsStopAll, type VoiceBehavior, type TtsMode } from "@/lib/audio/ttsManager";
 import { initSharedAudioContext } from "@/lib/avatar/lipSyncAnalyzer";
 
 interface VoicePanelProps {
   className?: string;
 }
 
+const elevenLabsEnabled = !!process.env.NEXT_PUBLIC_ELEVENLABS_ENABLED;
+
+const TTS_OPTIONS: { label: string; value: TtsMode }[] = [
+  { label: "Browser TTS", value: "browser" },
+  { label: "ElevenLabs", value: "elevenlabs" },
+];
+
+const MODE_LABELS: Record<TtsMode, string> = {
+  browser: "Browser",
+  server: "Server",
+  elevenlabs: "ElevenLabs",
+};
+
 export function VoicePanel({ className }: VoicePanelProps) {
   const [autoPlay, setAutoPlay] = useState(true);
   const autoPlayRef = useRef(autoPlay);
-  const [ttsMode, setTtsMode] = useState<"browser" | "server" | "google">("google");
+  const [ttsMode, setTtsMode] = useState<TtsMode>(
+    elevenLabsEnabled ? "elevenlabs" : "browser"
+  );
   const ttsModeRef = useRef(ttsMode);
   const [isExpanded, setIsExpanded] = useState(false);
-  
+
   // Track last message to allow replay
   const lastReplyRef = useRef<{ reply: string; emotion: string; behavior?: VoiceBehavior } | null>(null);
 
@@ -48,7 +63,7 @@ export function VoicePanel({ className }: VoicePanelProps) {
       speakWithFallback(replyText, {
         preferredMode: ttsModeRef.current,
         serverTtsEnabled: true,
-        googleEnabled: true,
+        elevenLabsEnabled: true,
         behavior,
       }).catch((err) => {
         console.error("TTS failed:", err);
@@ -67,14 +82,14 @@ export function VoicePanel({ className }: VoicePanelProps) {
   const handlePlay = () => {
     const last = lastReplyRef.current;
     if (!last) return;
-    
+
     initSharedAudioContext();
-    ttsStopAll(); // Stop anything currently playing first
-    
+    ttsStopAll();
+
     speakWithFallback(last.reply, {
       preferredMode: ttsModeRef.current,
       serverTtsEnabled: true,
-      googleEnabled: true,
+      elevenLabsEnabled: true,
       behavior: last.behavior,
     }).catch((err) => {
       console.error("TTS failed:", err);
@@ -100,7 +115,7 @@ export function VoicePanel({ className }: VoicePanelProps) {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5 rounded-full">
-            {ttsMode === "browser" ? "Browser" : "Google Studio"} TTS
+            {MODE_LABELS[ttsMode]} TTS
           </span>
           <Settings2 className={cn(
             "h-4 w-4 text-muted-foreground transition-transform",
@@ -112,33 +127,25 @@ export function VoicePanel({ className }: VoicePanelProps) {
       {/* Expandable content */}
       <div className={cn(
         "overflow-hidden transition-all duration-300",
-        isExpanded ? "max-h-64 opacity-100" : "max-h-0 opacity-0"
+        isExpanded ? "max-h-72 opacity-100" : "max-h-0 opacity-0"
       )}>
         <div className="px-4 pb-4 space-y-4">
           {/* TTS Mode Selection */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setTtsMode("browser")}
-              className={cn(
-                "flex-1 rounded-xl py-2 px-3 text-xs font-medium transition-all border",
-                ttsMode === "browser"
-                  ? "bg-primary/15 text-primary border-primary/30"
-                  : "bg-muted/20 text-muted-foreground border-transparent hover:bg-muted/40"
-              )}
-            >
-              Browser TTS
-            </button>
-            <button
-              onClick={() => setTtsMode("google")}
-              className={cn(
-                "flex-1 rounded-xl py-2 px-3 text-xs font-medium transition-all border",
-                ttsMode === "google"
-                  ? "bg-primary/15 text-primary border-primary/30"
-                  : "bg-muted/20 text-muted-foreground border-transparent hover:bg-muted/40"
-              )}
-            >
-              Google Studio
-            </button>
+          <div className="flex gap-2 flex-wrap">
+            {TTS_OPTIONS.map(({ label, value }) => (
+              <button
+                key={value}
+                onClick={() => setTtsMode(value)}
+                className={cn(
+                  "flex-1 rounded-xl py-2 px-3 text-xs font-medium transition-all border whitespace-nowrap",
+                  ttsMode === value
+                    ? "bg-primary/15 text-primary border-primary/30"
+                    : "bg-muted/20 text-muted-foreground border-transparent hover:bg-muted/40"
+                )}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {/* Voice Controls */}

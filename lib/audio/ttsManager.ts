@@ -1,10 +1,11 @@
 /**
  * ttsManager — Client-side TTS helper with auto-detection and fallback chain.
  *
- * Supports three modes:
- *   - "browser"     — Free, uses native speechSynthesis
- *   - "server"      — OpenAI TTS via /api/tts
- *   - "google"      — Google Cloud TTS via /api/tts (premium, Journey voice)
+ * Supports four modes:
+ *   - "browser"      — Free, uses native speechSynthesis
+ *   - "server"       — OpenAI TTS via /api/tts
+ *   - "google"       — Google Cloud TTS via /api/tts (premium, Journey voice)
+ *   - "elevenlabs"   — ElevenLabs TTS via /api/tts (highest quality)
  *
  * Usage (from a React component or any client module):
  *   import { detectBestTtsMode, speakWithFallback, stopAll } from "@/lib/audio/ttsManager";
@@ -14,13 +15,13 @@
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-export type TtsMode = "browser" | "server" | "google";
+export type TtsMode = "browser" | "server" | "elevenlabs";
 
 export type TtsFallbackStatus =
   | "idle"
   | "speaking-browser"
   | "speaking-server"
-  | "speaking-google"
+  | "speaking-elevenlabs"
   | "fallback-activated"
   | "error";
 
@@ -67,14 +68,14 @@ export function isBrowserTtsAvailable(): boolean {
 /**
  * Pick the best initial TTS mode.
  *
- * Priority: ElevenLabs (if enabled) > Server (if enabled) > Browser
+ * Priority: ElevenLabs > Server > Browser
  */
 export function detectBestTtsMode(
   serverTtsEnabled: boolean,
-  googleEnabled?: boolean,
+  elevenLabsEnabled?: boolean,
 ): TtsMode {
-  if (googleEnabled) {
-    return "google";
+  if (elevenLabsEnabled) {
+    return "elevenlabs";
   }
 
   if (isBrowserTtsAvailable()) {
@@ -168,7 +169,7 @@ function speakWithBrowserTts(
 async function speakWithServerProvider(
   text: string,
   requestId: number,
-  provider: "openai" | "google",
+  provider: "openai" | "elevenlabs",
 ): Promise<void> {
   const response = await fetch("/api/tts", {
     method: "POST",
@@ -198,20 +199,18 @@ async function speakWithServerProvider(
     throw new Error(`Invalid response format from ${provider} TTS.`);
   }
 
-  activeObjectUrl = null; // We are no longer using Object URLs
+  activeObjectUrl = null;
   activeAudio = null;
 
-  return new Promise<void>((resolve, reject) => {
-    // Listen for the tts-end event that LipSyncAnalyzer will dispatch when playback finishes
+  return new Promise<void>((resolve) => {
     const onEnd = () => {
       window.removeEventListener("eva:tts-end", onEnd);
       resolve();
     };
     window.addEventListener("eva:tts-end", onEnd);
 
-    // Emit TTS start with the raw base64 string for the analyzer to decode and play
     emitAvatarEvent("eva:tts-start", { 
-      mode: provider === "google" ? "server" : "server", 
+      mode: "server", 
       base64Audio: data.audioContent 
     });
   });
@@ -236,7 +235,7 @@ function cleanUpAudio(audio: HTMLAudioElement | null, objectUrl: string, request
  * fails, automatically try fallback providers.
  *
  * Fallback chain:
- *   google     → server → browser
+ *   elevenlabs → browser
  *   server     → browser
  *   browser    → server (if enabled)
  *
@@ -247,7 +246,7 @@ export async function speakWithFallback(
   options: {
     preferredMode: TtsMode;
     serverTtsEnabled: boolean;
-    googleEnabled?: boolean;
+    elevenLabsEnabled?: boolean;
     callbacks?: TtsCallbacks;
     behavior?: VoiceBehavior;
   },
@@ -261,47 +260,28 @@ export async function speakWithFallback(
   stopAll();
   const requestId = currentRequestId;
 
-  // ---- Google-preferred path ----
-  if (preferredMode === "google") {
-    callbacks?.onStatusChange?.("speaking-google");
+  // ---- ElevenLabs-preferred path ----
+  if (preferredMode === "elevenlabs") {
+    callbacks?.onStatusChange?.("speaking-elevenlabs");
     try {
-      await speakWithServerProvider(clean, requestId, "google");
+      await speakWithServerProvider(clean, requestId, "elevenlabs");
       callbacks?.onStatusChange?.("idle");
-      return "google";
+      return "elevenlabs";
     } catch (err) {
-      // Fallback to server if available
-      if (serverTtsEnabled) {
-        callbacks?.onStatusChange?.(
-          "fallback-activated",
-          "Google Cloud TTS failed — falling back to server TTS.",
-        );
-        try {
-          const fallbackProvider = options.googleEnabled ? "google" : "openai";
-          await speakWithServerProvider(clean, requestId, fallbackProvider);
-          callbacks?.onStatusChange?.("idle");
-          return "server";
-        } catch {
-          // Fall through to browser
-        }
-      }
-      // Fallback to browser
+      callbacks?.onStatusChange?.("fallback-activated", "ElevenLabs failed — falling back to browser TTS.");
       if (isBrowserTtsAvailable()) {
-        callbacks?.onStatusChange?.(
-          "fallback-activated",
-          "Google Cloud TTS failed — falling back to browser TTS.",
-        );
         try {
           await speakWithBrowserTts(clean, requestId, behavior);
           callbacks?.onStatusChange?.("idle");
           return "browser";
-        } catch {
-          // All failed
-        }
+        } catch { /* All failed */ }
       }
-      callbacks?.onStatusChange?.("error", err instanceof Error ? err.message : "Google Cloud TTS failed.");
+      callbacks?.onStatusChange?.("error", err instanceof Error ? err.message : "ElevenLabs TTS failed.");
       throw err;
     }
   }
+
+
 
   // ---- Server-preferred path ----
   if (preferredMode === "server") {
@@ -312,8 +292,7 @@ export async function speakWithFallback(
 
     callbacks?.onStatusChange?.("speaking-server");
     try {
-      const serverProvider = options.googleEnabled ? "google" : "openai";
-      await speakWithServerProvider(clean, requestId, serverProvider);
+      await speakWithServerProvider(clean, requestId, "openai");
       callbacks?.onStatusChange?.("idle");
       return "server";
     } catch (err) {
@@ -336,8 +315,7 @@ export async function speakWithFallback(
         "Browser TTS failed — switching to server fallback.",
       );
       try {
-        const fallbackProvider = options.googleEnabled ? "google" : "openai";
-        await speakWithServerProvider(clean, requestId, fallbackProvider);
+        await speakWithServerProvider(clean, requestId, "openai");
         callbacks?.onStatusChange?.("idle");
         return "server";
       } catch (serverError) {
