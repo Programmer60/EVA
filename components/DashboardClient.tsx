@@ -220,12 +220,9 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
             {/* The 3D VRM Avatar */}
             <div className="relative flex-1 flex flex-col items-center justify-center w-full py-2 lg:py-8">
               <AvatarPanel />
-              <p className="mt-2 lg:mt-4 text-center text-sm lg:text-base text-muted-foreground/60 font-serif italic">
-                {stateMessages[evaState]}
-              </p>
               
-              {/* Compact status chips below avatar - hidden on very small screens to save vertical space */}
-              <div className="mt-2 lg:mt-6 z-10 relative hidden md:block">
+              {/* Compact status chips below avatar - pulled up to hover slightly over bottom edge */}
+              <div className="z-20 relative hidden md:block -mt-6 lg:-mt-8">
                 <StatusChips
                   bond={profile?.bondTier ?? "new"}
                   mood={profile?.dominantEmotion ?? analytics?.dominantEmotion ?? "peaceful"}
@@ -233,6 +230,10 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
                   wellness={profile?.dominantReplyMode ?? analytics?.dominantReplyMode ?? "react"}
                 />
               </div>
+
+              <p className="mt-3 lg:mt-5 text-center text-sm lg:text-base text-muted-foreground/60 font-serif italic z-10 relative">
+                {stateMessages[evaState]}
+              </p>
             </div>
           </div>
 

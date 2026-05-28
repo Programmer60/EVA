@@ -351,15 +351,21 @@ export function AvatarPanel() {
       <div className="absolute inset-0 flex items-center justify-center z-10 drop-shadow-2xl">
         <Suspense
           fallback={
-            <EvaFace
-              expression={renderedExpr}
-              gaze={renderedGaze}
-              isBlinking={renderedBlink}
-              isSpeaking={renderedSpeaking}
-              breatheScale={renderedBreathe}
-              browDrift={renderedBrowDrift}
-              headDrift={renderedHeadDrift}
-            />
+            <div className="relative flex flex-col items-center justify-center w-full h-full">
+              <EvaFace
+                expression={renderedExpr}
+                gaze={renderedGaze}
+                isBlinking={renderedBlink}
+                isSpeaking={renderedSpeaking}
+                breatheScale={renderedBreathe}
+                browDrift={renderedBrowDrift}
+                headDrift={renderedHeadDrift}
+              />
+              <div className="absolute bottom-8 flex items-center gap-2 px-4 py-2 bg-background/60 backdrop-blur-sm rounded-full text-xs font-medium text-muted-foreground shadow-sm animate-pulse border border-border/50 z-20">
+                <span className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>
+                Connecting to EVA...
+              </div>
+            </div>
           }
         >
           {/* Dynamically load the 3D avatar canvas (client-only) */}
