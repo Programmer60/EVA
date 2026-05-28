@@ -55,6 +55,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
   const [currentEmotion, setCurrentEmotion] = useState<string>("neutral");
   const [inputMode, setInputMode] = useState<"voice" | "text">("text");
   const [isListening, setIsListening] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const { userId } = useAuth();
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -122,6 +123,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
     if (!userId) return;
 
     async function loadHistory() {
+      setIsLoadingHistory(true);
       try {
         const res = await fetch(`/api/history?limit=20`);
         if (res.ok) {
@@ -151,6 +153,8 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
         }
       } catch (e) {
         console.error("Failed to load history", e);
+      } finally {
+        setIsLoadingHistory(false);
       }
     }
     
@@ -550,20 +554,36 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
         onScroll={handleScroll}
         className="flex-1 space-y-5 overflow-y-auto p-5 min-h-0"
       >
-        {messages.map((msg) => (
-          <ChatBubble
-            key={msg.id}
-            message={msg.message}
-            sender={msg.sender}
-            timestamp={msg.timestamp}
-            isNew={msg.isNew}
-            interactionId={msg.interactionId}
-            feedbackGiven={msg.feedbackGiven}
-            onFeedback={(type) => {
-              if (msg.interactionId) handleFeedback(msg.id, msg.interactionId, type);
-            }}
-          />
-        ))}
+        {isLoadingHistory ? (
+          <div className="space-y-5 opacity-70">
+            <div className="flex gap-3">
+              <div className="w-8 h-8 rounded-full bg-primary/10 animate-pulse shrink-0" />
+              <div className="h-16 w-3/4 max-w-[85%] rounded-2xl rounded-tl-sm bg-muted/40 animate-pulse" />
+            </div>
+            <div className="flex gap-3 flex-row-reverse">
+              <div className="h-12 w-2/3 max-w-[85%] rounded-2xl rounded-tr-sm bg-primary/10 animate-pulse" />
+            </div>
+            <div className="flex gap-3">
+              <div className="w-8 h-8 rounded-full bg-primary/10 animate-pulse shrink-0" />
+              <div className="h-24 w-4/5 max-w-[85%] rounded-2xl rounded-tl-sm bg-muted/40 animate-pulse" />
+            </div>
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <ChatBubble
+              key={msg.id}
+              message={msg.message}
+              sender={msg.sender}
+              timestamp={msg.timestamp}
+              isNew={msg.isNew}
+              interactionId={msg.interactionId}
+              feedbackGiven={msg.feedbackGiven}
+              onFeedback={(type) => {
+                if (msg.interactionId) handleFeedback(msg.id, msg.interactionId, type);
+              }}
+            />
+          ))
+        )}
 
         {/* Presence / Thinking Indicator */}
         {(presencePhase === "thinking" || (isTyping && presencePhase !== "streaming")) && (
@@ -598,6 +618,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
             <input
               type="text"
               value={inputValue}
+              disabled={isLoadingHistory}
               onChange={(e) => {
                 setInputValue(e.target.value);
                 // Presence engine: interruption logic
@@ -606,12 +627,12 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
                 }
               }}
               onKeyDown={(e) => e.key === "Enter" && handleSend()}
-              placeholder="Share what's on your mind..."
-              className="flex-1 rounded-2xl border border-border/50 bg-background/60 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+              placeholder={isLoadingHistory ? "Loading history..." : "Share what's on your mind..."}
+              className="flex-1 rounded-2xl border border-border/50 bg-background/60 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-50"
             />
             <Button
               onClick={handleSend}
-              disabled={!inputValue.trim()}
+              disabled={!inputValue.trim() || isLoadingHistory}
               className="rounded-2xl px-4 shadow-md shadow-primary/20"
             >
               <Send className="h-4 w-4" />
@@ -621,6 +642,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
           <div className="flex flex-col items-center gap-3 py-2">
             <Button
               onClick={toggleListening}
+              disabled={isLoadingHistory}
               variant={isListening ? "default" : "outline"}
               size="lg"
               className={cn(
@@ -631,7 +653,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
               <Mic className={cn("h-5 w-5", isListening && "text-primary-foreground")} />
             </Button>
             <p className="text-xs text-muted-foreground">
-              {isListening ? "Listening..." : "Tap to speak"}
+              {isLoadingHistory ? "Loading history..." : isListening ? "Listening..." : "Tap to speak"}
             </p>
           </div>
         )}

@@ -32,7 +32,7 @@ EVA tracks and adapts to:
 - Wellness and life events (Exams, interviews, etc.)
 
 ### 🌸 Animated Avatar System
-- Live SVG-based companion avatar.
+- 3D animated avatar with expressive features.
 - Emotion-reactive visual presence (blushing, pupil dilation, gaze drift).
 - Idle breathing, thinking, and listening states.
 - Fully implemented **Lip-sync** powered by Web Audio API.
