@@ -64,7 +64,7 @@ export function VoicePanel() {
   const [isListening, setIsListening] = useState(false);
   const [isServerRecording, setIsServerRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [googleEnabled, setGoogleEnabled] = useState(true);
+  const [elevenLabsEnabled, setElevenLabsEnabled] = useState(true);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [ttsMode, setTtsMode] = useState<TtsMode>("browser");
   const [ttsFallbackStatus, setTtsFallbackStatus] = useState<TtsFallbackStatus>("idle");
@@ -103,20 +103,19 @@ export function VoicePanel() {
 
   // Auto-detect best TTS mode on mount
   useEffect(() => {
-    const best = detectBestTtsMode(serverTtsEnabled, googleEnabled);
-    if (best === "google") {
-      setTtsMode("google");
+    const best = detectBestTtsMode(serverTtsEnabled, elevenLabsEnabled);
+    if (best === "elevenlabs") {
+      setTtsMode("elevenlabs");
       setAutoDetectedMode(true);
     } else if (best === "server" && !speechSynthesisSupported) {
       setTtsMode("server");
       setAutoDetectedMode(true);
     }
-  }, [serverTtsEnabled, googleEnabled, speechSynthesisSupported]);
+  }, [serverTtsEnabled, elevenLabsEnabled, speechSynthesisSupported]);
 
   const canPlayReply =
     Boolean(lastReply) && (
       ttsMode === "browser" ? speechSynthesisSupported :
-      ttsMode === "google" ? googleEnabled :
       serverTtsEnabled
     );
 
@@ -157,7 +156,7 @@ export function VoicePanel() {
     speakWithFallback(text, {
       preferredMode: ttsMode,
       serverTtsEnabled,
-      googleEnabled: true,
+      elevenLabsEnabled,
       callbacks: ttsCallbacks(),
       behavior,
     }).catch((err) => {
@@ -169,7 +168,7 @@ export function VoicePanel() {
       // we MUST manually broadcast tts-end so the avatar knows to stop moving her lips.
       window.dispatchEvent(new CustomEvent("eva:tts-end"));
     });
-  }, [ttsMode, serverTtsEnabled, googleEnabled, ttsCallbacks]);
+  }, [ttsMode, serverTtsEnabled, elevenLabsEnabled, ttsCallbacks]);
 
   function sendTranscriptDraftToChat(message: string): void {
     if (typeof window === "undefined" || !message.trim()) {
@@ -534,17 +533,7 @@ export function VoicePanel() {
           />
           Server TTS
         </label>
-        <label className="eva-chat-label" style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
-          <input
-            type="radio"
-            name="eva-tts-mode"
-            value="google"
-            checked={ttsMode === "google"}
-            onChange={() => { setTtsMode("google"); setAutoDetectedMode(false); }}
-            disabled={!googleEnabled}
-          />
-          🎙️ Google TTS
-        </label>
+
       </div>
 
       <div className="eva-voice-actions">
@@ -647,9 +636,7 @@ export function VoicePanel() {
         <p className="eva-note">Server TTS (OpenAI) is enabled for reply playback.</p>
       )}
 
-      {ttsMode === "google" && (
-        <p className="eva-note">🎙️ Google Cloud TTS active — premium natural speech.</p>
-      )}
+
 
       {!speechRecognitionSupported && (
         <p className="eva-note">This browser does not support Web Speech recognition.</p>

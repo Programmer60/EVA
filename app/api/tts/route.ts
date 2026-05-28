@@ -42,20 +42,25 @@ async function generateElevenLabsTts(
 
   const audioStream = await client.textToSpeech.convert(voiceId, {
     text,
-    model_id: model,
-    output_format: "mp3_44100_128",
-    voice_settings: {
+    modelId: model,
+    outputFormat: "mp3_44100_128",
+    voiceSettings: {
       stability: 0.5,
-      similarity_boost: 0.8,
+      similarityBoost: 0.8,
       style: 0.2,
-      use_speaker_boost: true,
+      useSpeakerBoost: true,
     },
   });
 
-  // Collect all chunks from the stream into a buffer
+  // Read the web ReadableStream
+  const reader = audioStream.getReader();
   const chunks: Buffer[] = [];
-  for await (const chunk of audioStream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(Buffer.from(value));
+    }
   }
   return Buffer.concat(chunks);
 }
