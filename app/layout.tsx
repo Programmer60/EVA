@@ -1,19 +1,8 @@
 import type { Metadata, Viewport } from 'next'
-import { Inter, Crimson_Pro } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { ClerkProvider } from '@clerk/nextjs'
 import { ThemeProvider } from '@/components/theme-provider'
 import './globals.css'
-
-const inter = Inter({ 
-  subsets: ["latin"],
-  variable: "--font-inter"
-});
-
-const crimsonPro = Crimson_Pro({ 
-  subsets: ["latin"],
-  variable: "--font-crimson"
-});
 
 export const metadata: Metadata = {
   title: {
@@ -91,7 +80,7 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider>
-      <html lang="en" className={`${inter.variable} ${crimsonPro.variable} bg-background`} suppressHydrationWarning>
+      <html lang="en" className="bg-background" suppressHydrationWarning>
         <body className="font-sans antialiased">
           <ThemeProvider
             attribute="class"

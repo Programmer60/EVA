@@ -115,7 +115,7 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
     : "peaceful";
 
   return (
-    <main className="h-screen bg-linear-to-br from-blue-50 via-indigo-50/40 to-teal-50 dark:from-slate-950 dark:via-slate-900/80 dark:to-slate-800 overflow-hidden flex flex-col transition-colors duration-1000">
+    <main className="min-h-[100dvh] lg:h-screen bg-linear-to-br from-blue-50 via-indigo-50/40 to-teal-50 dark:from-slate-950 dark:via-slate-900/80 dark:to-slate-800 overflow-x-hidden overflow-y-auto lg:overflow-hidden flex flex-col transition-colors duration-1000">
       {/* Ambient background - mood responsive with breathing halo */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         {/* Central animated breathing halo behind EVA */}
@@ -136,7 +136,7 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
         <div className="absolute bottom-0 left-0 w-150 h-150 bg-accent/5 rounded-full blur-[150px]" />
       </div>
 
-      <div className="relative z-10 h-full flex flex-col">
+      <div className="relative z-10 flex-1 flex flex-col min-h-0 lg:overflow-hidden">
         {/* Minimal Header with Profile */}
         <header className="flex items-center justify-between px-6 lg:px-8 py-4">
           <div className="flex items-center gap-3">
@@ -239,7 +239,7 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
 
           {/* Right: Conversation - Secondary focus */}
           <div 
-            className="w-full lg:w-[var(--panel-width)] flex flex-col gap-4 min-h-0 relative shrink-0"
+            className="w-full lg:w-[var(--panel-width)] flex flex-col gap-4 min-h-0 lg:h-full relative shrink-0"
             style={{ "--panel-width": `${panelWidth}px` } as React.CSSProperties}
           >
             {/* Drag Handle Divider */}
@@ -250,7 +250,7 @@ export default function DashboardClient({ profile, analytics }: { profile: any, 
               <div className={`w-1 h-12 rounded-full transition-colors duration-200 ${isDragging ? 'bg-primary/50' : 'bg-primary/0 group-hover:bg-primary/20'}`} />
             </div>
 
-            <ConversationPanel className="flex-1 min-h-0" />
+            <ConversationPanel className="h-[60vh] lg:h-auto lg:flex-1 lg:min-h-0" />
             <VoicePanel />
           </div>
         </div>

@@ -512,7 +512,7 @@ export function ConversationPanel({ className }: ConversationPanelProps) {
   return (
     <div
       className={cn(
-        "flex flex-col rounded-3xl border border-border/40 bg-linear-to-br from-blue-50/60 via-indigo-50/60 to-teal-50/60 dark:from-slate-900/80 dark:via-slate-800/80 dark:to-slate-900/80 backdrop-blur-xl overflow-hidden shadow-xl shadow-black/5",
+        "flex flex-col h-full rounded-3xl border border-border/40 bg-linear-to-br from-blue-50/60 via-indigo-50/60 to-teal-50/60 dark:from-slate-900/80 dark:via-slate-800/80 dark:to-slate-900/80 backdrop-blur-xl overflow-hidden shadow-xl shadow-black/5",
         className
       )}
     >
